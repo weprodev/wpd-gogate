@@ -20,7 +20,7 @@ type DBTX interface {
 type Config struct {
 	RolesTable               string
 	PermissionsTable         string
-	RoleHasPermissionsTable   string
+	RoleHasPermissionsTable  string
 	ModelHasRolesTable       string
 	ModelHasPermissionsTable string
 	DefaultGuardName         string
@@ -31,7 +31,7 @@ func DefaultConfig() Config {
 	return Config{
 		RolesTable:               "roles",
 		PermissionsTable:         "permissions",
-		RoleHasPermissionsTable:   "role_has_permissions",
+		RoleHasPermissionsTable:  "role_has_permissions",
 		ModelHasRolesTable:       "model_has_roles",
 		ModelHasPermissionsTable: "model_has_permissions",
 		DefaultGuardName:         "web",

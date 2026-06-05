@@ -69,13 +69,13 @@ func RequirePermission(gate *Gate, permissionName string, opts *MiddlewareOption
 			// Extract model ID
 			modelID, err := options.ExtractModelID(c)
 			if err != nil {
-				return echo.NewHTTPError(http.StatusUnauthorized, "Unauthorized: " + err.Error())
+				return echo.NewHTTPError(http.StatusUnauthorized, "Unauthorized: "+err.Error())
 			}
 
 			// Extract team ID (optional)
 			teamID, err := options.ExtractTeamID(c)
 			if err != nil {
-				return echo.NewHTTPError(http.StatusBadRequest, "Bad Request: " + err.Error())
+				return echo.NewHTTPError(http.StatusBadRequest, "Bad Request: "+err.Error())
 			}
 
 			// Verify permission using the Gate
