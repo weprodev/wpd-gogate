@@ -65,6 +65,12 @@ func TestGate_Check(t *testing.T) {
 		"admin": {
 			"create:templates": true,
 		},
+		"writer": {
+			"create:articles": true,
+		},
+		"viewer": {
+			"read:articles": true,
+		},
 	}
 
 	modelType := "users"
@@ -119,6 +125,44 @@ func TestGate_Check(t *testing.T) {
 		}
 		if allowed {
 			t.Error("expected check to be denied")
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unfulfilled expectations: %v", err)
+		}
+	})
+
+	t.Run("Multi-Workspace Role Isolation", func(t *testing.T) {
+		workspaceA := "workspace-A"
+		workspaceB := "workspace-B"
+		permCreate := "create:articles"
+
+		// 1. Query for workspace A should look up roles scoped to workspace A
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
+			WithArgs(modelType, modelID, workspaceA, permCreate).
+			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "writer"))
+
+		// 2. Query for workspace B should look up roles scoped to workspace B
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
+			WithArgs(modelType, modelID, workspaceB, permCreate).
+			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "viewer"))
+
+		// Check workspace A (should be allowed via writer role)
+		allowedA, err := gate.Check(context.Background(), modelType, modelID, permCreate, workspaceA)
+		if err != nil {
+			t.Fatalf("Check failed for workspace A: %v", err)
+		}
+		if !allowedA {
+			t.Error("expected check to be allowed in workspace A (writer)")
+		}
+
+		// Check workspace B (should be denied since viewer doesn't have create:articles)
+		allowedB, err := gate.Check(context.Background(), modelType, modelID, permCreate, workspaceB)
+		if err != nil {
+			t.Fatalf("Check failed for workspace B: %v", err)
+		}
+		if allowedB {
+			t.Error("expected check to be denied in workspace B (viewer)")
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {

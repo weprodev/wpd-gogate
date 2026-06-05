@@ -90,6 +90,10 @@ func TestIntegration_Postgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create role viewer: %v", err)
 	}
+	err = gate.CreateRole(ctx, "writer", "web")
+	if err != nil {
+		t.Fatalf("failed to create role writer: %v", err)
+	}
 
 	// Create permissions
 	err = gate.CreatePermission(ctx, "publish:articles", "web")
@@ -99,6 +103,10 @@ func TestIntegration_Postgres(t *testing.T) {
 	err = gate.CreatePermission(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("failed to create permission read:articles: %v", err)
+	}
+	err = gate.CreatePermission(ctx, "create:articles", "web")
+	if err != nil {
+		t.Fatalf("failed to create permission create:articles: %v", err)
 	}
 	err = gate.CreatePermission(ctx, "admin:settings", "web")
 	if err != nil {
@@ -127,12 +135,21 @@ func TestIntegration_Postgres(t *testing.T) {
 		t.Fatalf("failed to assign read:articles to viewer: %v", err)
 	}
 
+	writerRole := gate.Role("writer")
+	err = writerRole.GivePermissionTo(ctx, "create:articles")
+	if err != nil {
+		t.Fatalf("failed to assign create:articles to writer: %v", err)
+	}
+
 	// Verify local cache updates
 	if !gate.HasRolePermission("editor", "publish:articles") {
 		t.Error("expected editor to have publish:articles in cache")
 	}
 	if !gate.HasRolePermission("editor", "read:articles") {
 		t.Error("expected editor to have read:articles in cache")
+	}
+	if !gate.HasRolePermission("writer", "create:articles") {
+		t.Error("expected writer to have create:articles in cache")
 	}
 	if gate.HasRolePermission("viewer", "publish:articles") {
 		t.Error("viewer should not have publish:articles in cache")
@@ -177,6 +194,53 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 	if ok {
 		t.Error("user should not have read:articles access in otherTeamID")
+	}
+
+	// Test case: Fully isolated multi-workspace roles (writer in Team A, viewer in Team B)
+	userTeamA := gate.Model("users", userID, teamID)
+	err = userTeamA.AssignRole(ctx, "writer")
+	if err != nil {
+		t.Fatalf("failed to assign writer role in Team A: %v", err)
+	}
+	userTeamB := gate.Model("users", userID, otherTeamID)
+	err = userTeamB.AssignRole(ctx, "viewer")
+	if err != nil {
+		t.Fatalf("failed to assign viewer role in Team B: %v", err)
+	}
+
+	// In Team A (writer role assigned), user has create:articles
+	ok, err = userTeamA.Can(ctx, "create:articles")
+	if err != nil {
+		t.Fatalf("Can failed: %v", err)
+	}
+	if !ok {
+		t.Error("expected user to have create:articles access in Team A (writer)")
+	}
+
+	// In Team B (viewer role assigned), user has read:articles but NOT create:articles
+	ok, err = userTeamB.Can(ctx, "read:articles")
+	if err != nil {
+		t.Fatalf("Can failed: %v", err)
+	}
+	if !ok {
+		t.Error("expected user to have read:articles access in Team B (viewer)")
+	}
+	ok, err = userTeamB.Can(ctx, "create:articles")
+	if err != nil {
+		t.Fatalf("Can failed: %v", err)
+	}
+	if ok {
+		t.Error("user should not have create:articles access in Team B (viewer)")
+	}
+
+	// Clean up Team A's writer role and Team B's viewer role
+	err = userTeamA.RemoveRole(ctx, "writer")
+	if err != nil {
+		t.Fatalf("failed to remove writer role from Team A: %v", err)
+	}
+	err = userTeamB.RemoveRole(ctx, "viewer")
+	if err != nil {
+		t.Fatalf("failed to remove viewer role from Team B: %v", err)
 	}
 
 	// Give direct permission override in teamID
