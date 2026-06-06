@@ -43,6 +43,28 @@ The package utilizes 5 tables:
 4. `model_has_roles`: Assigns roles to models (e.g., assigning the `editor` role to a specific user within a specific workspace/team).
 5. `model_has_permissions`: Assigns direct permission overrides to models (e.g., giving a specific user `articles.delete` even if their role doesn't allow it).
 
+### Understanding `guard_name`
+
+The `guard_name` column defines the **authentication boundary** or **context** under which a role or permission is valid.
+
+#### 1. Scoping Multiple Authentication Systems
+In complex systems, you often have different ways of authenticating users, each having its own context. For example:
+- **`web`**: Standard human portal users authenticated via JWT or session cookies.
+- **`api`**: External API clients or services authenticated via API keys or client credentials.
+- **`admin`**: Internal super-admins logging into an employee-only panel.
+
+By defining `guard_name`, you prevent permissions from leaking across different interfaces. A user might have the `settings.write` permission under the `web` guard, but an API key might require the `settings.write` permission under the `api` guard.
+
+#### 2. Preventing Name Collisions
+The database enforces a unique constraint on permission/role names per guard:
+```sql
+CONSTRAINT permissions_name_guard_unique UNIQUE (name, guard_name)
+```
+This allows you to define identical permission names (e.g., `logs.read`) under different guards without collision, keeping their mappings fully isolated.
+
+#### 3. Default Value
+By default, the library sets `guard_name` to `'web'` if it is not explicitly specified.
+
 ### Running Migrations
 We provide standard Postgres migration files under the `migrations/` folder. Simply run the UP migration file on your database client or migration manager to create the tables:
 - **UP Migration (Creates Tables)**: [migrations/create_permission_tables.up.sql](file:///Users/michael/Sites/WeProDev/wpd-gogate/migrations/create_permission_tables.up.sql)
