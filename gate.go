@@ -137,7 +137,7 @@ func (g *Gate) HasRolePermission(guardName, roleName, permissionName string) boo
 // teamID is optional and can be nil to check global assignments.
 func (g *Gate) Check(ctx context.Context, modelType string, modelID any, permissionName string, guardName string, teamID any) (bool, error) {
 	guardName = g.resolveGuardName(guardName)
-	
+
 	var query string
 	var args []any
 

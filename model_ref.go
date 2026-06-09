@@ -317,9 +317,9 @@ func (m *ModelRef) HasAnyRole(ctx context.Context, guardName string, roleNames .
 	if err != nil {
 		return false, err
 	}
-	
+
 	assigned := rolesMap[guardName]
-	
+
 	roleMap := make(map[string]bool, len(assigned))
 	for _, r := range assigned {
 		roleMap[r] = true
@@ -342,9 +342,9 @@ func (m *ModelRef) HasAllRoles(ctx context.Context, guardName string, roleNames 
 	if err != nil {
 		return false, err
 	}
-	
+
 	assigned := rolesMap[guardName]
-	
+
 	roleMap := make(map[string]bool, len(assigned))
 	for _, r := range assigned {
 		roleMap[r] = true
@@ -366,7 +366,7 @@ func (m *ModelRef) HasAnyPermission(ctx context.Context, permissionNames ...stri
 	if err != nil {
 		return false, err
 	}
-	
+
 	permMap := make(map[string]bool, len(assigned))
 	for _, p := range assigned {
 		permMap[p] = true
@@ -388,7 +388,7 @@ func (m *ModelRef) HasAllPermissions(ctx context.Context, permissionNames ...str
 	if err != nil {
 		return false, err
 	}
-	
+
 	permMap := make(map[string]bool, len(assigned))
 	for _, p := range assigned {
 		permMap[p] = true

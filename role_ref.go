@@ -9,7 +9,7 @@ import (
 
 // RoleRef provides a fluent API for managing a specific Role's permissions.
 type RoleRef struct {
-	gate *Gate
+	gate      *Gate
 	name      string
 	guardName string
 }

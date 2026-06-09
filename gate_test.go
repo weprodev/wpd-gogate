@@ -585,4 +585,3 @@ func TestModelRef_RBAC_Helpers(t *testing.T) {
 		}
 	})
 }
-
