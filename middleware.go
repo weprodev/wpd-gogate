@@ -20,6 +20,8 @@ type MiddlewareOptions struct {
 	OnDenied func(c echo.Context, permissionName string) error
 	// OnError defines the response when an internal database error occurs.
 	OnError func(c echo.Context, err error) error
+	// GuardName specifies the guard name for this check. If empty, uses default.
+	GuardName string
 }
 
 // DefaultMiddlewareOptions provides sensible defaults for Echo web applications.
@@ -79,7 +81,11 @@ func RequirePermission(gate *Gate, permissionName string, opts *MiddlewareOption
 			}
 
 			// Verify permission using the Gate
-			allowed, err := gate.Check(c.Request().Context(), options.ModelType, modelID, permissionName, teamID)
+			guardName := options.GuardName
+			if guardName == "" {
+				guardName = gate.cfg.DefaultGuardName
+			}
+			allowed, err := gate.Check(c.Request().Context(), options.ModelType, modelID, permissionName, guardName, teamID)
 			if err != nil {
 				return options.OnError(c, err)
 			}

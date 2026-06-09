@@ -10,14 +10,16 @@ import (
 // RoleRef provides a fluent API for managing a specific Role's permissions.
 type RoleRef struct {
 	gate *Gate
-	name string
+	name      string
+	guardName string
 }
 
 // Role constructs a RoleRef for role-scoped operations.
-func (g *Gate) Role(name string) *RoleRef {
+func (g *Gate) Role(name string, guardName string) *RoleRef {
 	return &RoleRef{
-		gate: g,
-		name: name,
+		gate:      g,
+		name:      name,
+		guardName: g.resolveGuardName(guardName),
 	}
 }
 
@@ -25,9 +27,9 @@ func (g *Gate) Role(name string) *RoleRef {
 // and immediately updates the in-memory cache.
 func (r *RoleRef) GivePermissionTo(ctx context.Context, permissionName string) error {
 	// Get role ID
-	queryRole := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 LIMIT 1", r.gate.cfg.RolesTable)
+	queryRole := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 AND guard_name = $2 LIMIT 1", r.gate.cfg.RolesTable)
 	var roleID string
-	err := r.gate.db.QueryRowContext(ctx, queryRole, r.name).Scan(&roleID)
+	err := r.gate.db.QueryRowContext(ctx, queryRole, r.name, r.guardName).Scan(&roleID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("wpd-gogate: role %q not found: %w", r.name, err)
@@ -36,9 +38,9 @@ func (r *RoleRef) GivePermissionTo(ctx context.Context, permissionName string) e
 	}
 
 	// Get permission ID
-	queryPermission := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 LIMIT 1", r.gate.cfg.PermissionsTable)
+	queryPermission := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 AND guard_name = $2 LIMIT 1", r.gate.cfg.PermissionsTable)
 	var permissionID string
-	err = r.gate.db.QueryRowContext(ctx, queryPermission, permissionName).Scan(&permissionID)
+	err = r.gate.db.QueryRowContext(ctx, queryPermission, permissionName, r.guardName).Scan(&permissionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("wpd-gogate: permission %q not found: %w", permissionName, err)
@@ -63,10 +65,11 @@ func (r *RoleRef) GivePermissionTo(ctx context.Context, permissionName string) e
 	if r.gate.rolePermissions == nil {
 		r.gate.rolePermissions = make(map[string]map[string]bool)
 	}
-	if _, ok := r.gate.rolePermissions[r.name]; !ok {
-		r.gate.rolePermissions[r.name] = make(map[string]bool)
+	cacheKey := r.guardName + ":" + r.name
+	if _, ok := r.gate.rolePermissions[cacheKey]; !ok {
+		r.gate.rolePermissions[cacheKey] = make(map[string]bool)
 	}
-	r.gate.rolePermissions[r.name][permissionName] = true
+	r.gate.rolePermissions[cacheKey][permissionName] = true
 	r.gate.mu.Unlock()
 
 	return nil
@@ -76,9 +79,9 @@ func (r *RoleRef) GivePermissionTo(ctx context.Context, permissionName string) e
 // and immediately removes it from the in-memory cache.
 func (r *RoleRef) RevokePermissionTo(ctx context.Context, permissionName string) error {
 	// Get role ID
-	queryRole := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 LIMIT 1", r.gate.cfg.RolesTable)
+	queryRole := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 AND guard_name = $2 LIMIT 1", r.gate.cfg.RolesTable)
 	var roleID string
-	err := r.gate.db.QueryRowContext(ctx, queryRole, r.name).Scan(&roleID)
+	err := r.gate.db.QueryRowContext(ctx, queryRole, r.name, r.guardName).Scan(&roleID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // Role doesn't exist, nothing to revoke
@@ -87,9 +90,9 @@ func (r *RoleRef) RevokePermissionTo(ctx context.Context, permissionName string)
 	}
 
 	// Get permission ID
-	queryPermission := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 LIMIT 1", r.gate.cfg.PermissionsTable)
+	queryPermission := fmt.Sprintf("SELECT id FROM %s WHERE name = $1 AND guard_name = $2 LIMIT 1", r.gate.cfg.PermissionsTable)
 	var permissionID string
-	err = r.gate.db.QueryRowContext(ctx, queryPermission, permissionName).Scan(&permissionID)
+	err = r.gate.db.QueryRowContext(ctx, queryPermission, permissionName, r.guardName).Scan(&permissionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // Permission doesn't exist, nothing to revoke
@@ -110,7 +113,8 @@ func (r *RoleRef) RevokePermissionTo(ctx context.Context, permissionName string)
 	// Remove from in-memory cache instantly
 	r.gate.mu.Lock()
 	if r.gate.rolePermissions != nil {
-		if perms, ok := r.gate.rolePermissions[r.name]; ok {
+		cacheKey := r.guardName + ":" + r.name
+		if perms, ok := r.gate.rolePermissions[cacheKey]; ok {
 			delete(perms, permissionName)
 		}
 	}
@@ -125,7 +129,8 @@ func (r *RoleRef) GetPermissionNames(ctx context.Context) ([]string, error) {
 	defer r.gate.mu.RUnlock()
 
 	var permissions []string
-	if perms, ok := r.gate.rolePermissions[r.name]; ok {
+	cacheKey := r.guardName + ":" + r.name
+	if perms, ok := r.gate.rolePermissions[cacheKey]; ok {
 		for p := range perms {
 			permissions = append(permissions, p)
 		}

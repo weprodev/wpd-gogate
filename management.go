@@ -7,9 +7,7 @@ import (
 
 // CreateRole inserts a new role into the database.
 func (g *Gate) CreateRole(ctx context.Context, name string, guardName string) error {
-	if guardName == "" {
-		guardName = g.cfg.DefaultGuardName
-	}
+	guardName = g.resolveGuardName(guardName)
 
 	query := fmt.Sprintf(`
 		INSERT INTO %s (name, guard_name)
@@ -27,9 +25,7 @@ func (g *Gate) CreateRole(ctx context.Context, name string, guardName string) er
 
 // CreatePermission inserts a new permission into the database.
 func (g *Gate) CreatePermission(ctx context.Context, name string, guardName string) error {
-	if guardName == "" {
-		guardName = g.cfg.DefaultGuardName
-	}
+	guardName = g.resolveGuardName(guardName)
 
 	query := fmt.Sprintf(`
 		INSERT INTO %s (name, guard_name)

@@ -62,12 +62,20 @@ func NewGate(db DBTX, cfg *Config) *Gate {
 	}
 }
 
+// resolveGuardName returns the default guard name if the provided one is empty.
+func (g *Gate) resolveGuardName(guardName string) string {
+	if guardName == "" {
+		return g.cfg.DefaultGuardName
+	}
+	return guardName
+}
+
 // LoadPolicy fetches all role-permission associations from the database
 // and caches them in memory. This is thread-safe and should be run on boot
 // or when permissions are updated.
 func (g *Gate) LoadPolicy(ctx context.Context) error {
 	query := fmt.Sprintf(`
-		SELECT r.name, p.name
+		SELECT r.guard_name, r.name, p.name
 		FROM %s rhp
 		JOIN %s r ON r.id = rhp.role_id
 		JOIN %s p ON p.id = rhp.permission_id
@@ -83,15 +91,16 @@ func (g *Gate) LoadPolicy(ctx context.Context) error {
 	newCache := make(map[string]map[string]bool)
 
 	for rows.Next() {
-		var roleName, permissionName string
-		if err := rows.Scan(&roleName, &permissionName); err != nil {
+		var guardName, roleName, permissionName string
+		if err := rows.Scan(&guardName, &roleName, &permissionName); err != nil {
 			return fmt.Errorf("wpd-gogate: scan role permission row: %w", err)
 		}
 
-		if _, exists := newCache[roleName]; !exists {
-			newCache[roleName] = make(map[string]bool)
+		cacheKey := guardName + ":" + roleName
+		if _, exists := newCache[cacheKey]; !exists {
+			newCache[cacheKey] = make(map[string]bool)
 		}
-		newCache[roleName][permissionName] = true
+		newCache[cacheKey][permissionName] = true
 	}
 
 	if err := rows.Err(); err != nil {
@@ -108,11 +117,14 @@ func (g *Gate) LoadPolicy(ctx context.Context) error {
 
 // HasRolePermission performs an in-memory O(1) check of whether a role
 // is assigned a specific permission.
-func (g *Gate) HasRolePermission(roleName, permissionName string) bool {
+func (g *Gate) HasRolePermission(guardName, roleName, permissionName string) bool {
+	guardName = g.resolveGuardName(guardName)
+
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	permissions, exists := g.rolePermissions[roleName]
+	cacheKey := guardName + ":" + roleName
+	permissions, exists := g.rolePermissions[cacheKey]
 	if !exists {
 		return false
 	}
@@ -123,25 +135,55 @@ func (g *Gate) HasRolePermission(roleName, permissionName string) bool {
 // It queries both direct permissions and roles in a single database round-trip (UNION ALL),
 // then maps them against the in-memory cache to determine access.
 // teamID is optional and can be nil to check global assignments.
-func (g *Gate) Check(ctx context.Context, modelType string, modelID any, permissionName string, teamID any) (bool, error) {
-	query := fmt.Sprintf(`
-		SELECT 'role' AS type, r.name AS value
-		FROM %s mhr
-		JOIN %s r ON r.id = mhr.role_id
-		WHERE mhr.model_type = $1
-		  AND mhr.model_id = $2
-		  AND mhr.team_id IS NOT DISTINCT FROM $3
-		UNION ALL
-		SELECT 'permission' AS type, p.name AS value
-		FROM %s mhp
-		JOIN %s p ON p.id = mhp.permission_id
-		WHERE mhp.model_type = $1
-		  AND mhp.model_id = $2
-		  AND mhp.team_id IS NOT DISTINCT FROM $3
-		  AND p.name = $4
-	`, g.cfg.ModelHasRolesTable, g.cfg.RolesTable, g.cfg.ModelHasPermissionsTable, g.cfg.PermissionsTable)
+func (g *Gate) Check(ctx context.Context, modelType string, modelID any, permissionName string, guardName string, teamID any) (bool, error) {
+	guardName = g.resolveGuardName(guardName)
+	
+	var query string
+	var args []any
 
-	rows, err := g.db.QueryContext(ctx, query, modelType, modelID, teamID, permissionName)
+	if IsNilOrEmpty(teamID) {
+		query = fmt.Sprintf(`
+			SELECT 'role' AS type, r.name AS value
+			FROM %s mhr
+			JOIN %s r ON r.id = mhr.role_id
+			WHERE mhr.model_type = $1
+			  AND mhr.model_id = $2
+			  AND mhr.team_id IS NULL
+			  AND r.guard_name = $3
+			UNION ALL
+			SELECT 'permission' AS type, p.name AS value
+			FROM %s mhp
+			JOIN %s p ON p.id = mhp.permission_id
+			WHERE mhp.model_type = $1
+			  AND mhp.model_id = $2
+			  AND mhp.team_id IS NULL
+			  AND p.name = $4
+			  AND p.guard_name = $3
+		`, g.cfg.ModelHasRolesTable, g.cfg.RolesTable, g.cfg.ModelHasPermissionsTable, g.cfg.PermissionsTable)
+		args = []any{modelType, modelID, guardName, permissionName}
+	} else {
+		query = fmt.Sprintf(`
+			SELECT 'role' AS type, r.name AS value
+			FROM %s mhr
+			JOIN %s r ON r.id = mhr.role_id
+			WHERE mhr.model_type = $1
+			  AND mhr.model_id = $2
+			  AND mhr.team_id = $5
+			  AND r.guard_name = $3
+			UNION ALL
+			SELECT 'permission' AS type, p.name AS value
+			FROM %s mhp
+			JOIN %s p ON p.id = mhp.permission_id
+			WHERE mhp.model_type = $1
+			  AND mhp.model_id = $2
+			  AND mhp.team_id = $5
+			  AND p.name = $4
+			  AND p.guard_name = $3
+		`, g.cfg.ModelHasRolesTable, g.cfg.RolesTable, g.cfg.ModelHasPermissionsTable, g.cfg.PermissionsTable)
+		args = []any{modelType, modelID, guardName, permissionName, teamID}
+	}
+
+	rows, err := g.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("wpd-gogate: query access records: %w", err)
 	}
@@ -160,7 +202,7 @@ func (g *Gate) Check(ctx context.Context, modelType string, modelID any, permiss
 
 		if recordType == "role" {
 			// Check the in-memory cache for this role
-			if g.HasRolePermission(value, permissionName) {
+			if g.HasRolePermission(guardName, value, permissionName) {
 				return true, nil
 			}
 		}

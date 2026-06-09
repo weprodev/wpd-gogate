@@ -119,7 +119,7 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Associate permissions with roles
-	editorRole := gate.Role("editor")
+	editorRole := gate.Role("editor", "web")
 	err = editorRole.GivePermissionTo(ctx, "publish:articles")
 	if err != nil {
 		t.Fatalf("failed to assign publish:articles to editor: %v", err)
@@ -129,29 +129,29 @@ func TestIntegration_Postgres(t *testing.T) {
 		t.Fatalf("failed to assign read:articles to editor: %v", err)
 	}
 
-	viewerRole := gate.Role("viewer")
+	viewerRole := gate.Role("viewer", "web")
 	err = viewerRole.GivePermissionTo(ctx, "read:articles")
 	if err != nil {
 		t.Fatalf("failed to assign read:articles to viewer: %v", err)
 	}
 
-	writerRole := gate.Role("writer")
+	writerRole := gate.Role("writer", "web")
 	err = writerRole.GivePermissionTo(ctx, "create:articles")
 	if err != nil {
 		t.Fatalf("failed to assign create:articles to writer: %v", err)
 	}
 
 	// Verify local cache updates
-	if !gate.HasRolePermission("editor", "publish:articles") {
+	if !gate.HasRolePermission("web", "editor", "publish:articles") {
 		t.Error("expected editor to have publish:articles in cache")
 	}
-	if !gate.HasRolePermission("editor", "read:articles") {
+	if !gate.HasRolePermission("web", "editor", "read:articles") {
 		t.Error("expected editor to have read:articles in cache")
 	}
-	if !gate.HasRolePermission("writer", "create:articles") {
+	if !gate.HasRolePermission("web", "writer", "create:articles") {
 		t.Error("expected writer to have create:articles in cache")
 	}
-	if gate.HasRolePermission("viewer", "publish:articles") {
+	if gate.HasRolePermission("web", "viewer", "publish:articles") {
 		t.Error("viewer should not have publish:articles in cache")
 	}
 
@@ -163,7 +163,7 @@ func TestIntegration_Postgres(t *testing.T) {
 	userInTeam := gate.Model("users", userID, teamID)
 
 	// Check initially has no access
-	ok, err := userInTeam.Can(ctx, "read:articles")
+	ok, err := userInTeam.Can(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -172,13 +172,13 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Assign viewer role in teamID
-	err = userInTeam.AssignRole(ctx, "viewer")
+	err = userInTeam.AssignRole(ctx, "viewer", "web")
 	if err != nil {
 		t.Fatalf("failed to assign viewer role: %v", err)
 	}
 
 	// Verify access allowed
-	ok, err = userInTeam.Can(ctx, "read:articles")
+	ok, err = userInTeam.Can(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestIntegration_Postgres(t *testing.T) {
 
 	// Verify check is scoped to teamID (checking otherTeamID should return false)
 	userInOtherTeam := gate.Model("users", userID, otherTeamID)
-	ok, err = userInOtherTeam.Can(ctx, "read:articles")
+	ok, err = userInOtherTeam.Can(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -198,18 +198,18 @@ func TestIntegration_Postgres(t *testing.T) {
 
 	// Test case: Fully isolated multi-workspace roles (writer in Team A, viewer in Team B)
 	userTeamA := gate.Model("users", userID, teamID)
-	err = userTeamA.AssignRole(ctx, "writer")
+	err = userTeamA.AssignRole(ctx, "writer", "web")
 	if err != nil {
 		t.Fatalf("failed to assign writer role in Team A: %v", err)
 	}
 	userTeamB := gate.Model("users", userID, otherTeamID)
-	err = userTeamB.AssignRole(ctx, "viewer")
+	err = userTeamB.AssignRole(ctx, "viewer", "web")
 	if err != nil {
 		t.Fatalf("failed to assign viewer role in Team B: %v", err)
 	}
 
 	// In Team A (writer role assigned), user has create:articles
-	ok, err = userTeamA.Can(ctx, "create:articles")
+	ok, err = userTeamA.Can(ctx, "create:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -218,14 +218,14 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// In Team B (viewer role assigned), user has read:articles but NOT create:articles
-	ok, err = userTeamB.Can(ctx, "read:articles")
+	ok, err = userTeamB.Can(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
 	if !ok {
 		t.Error("expected user to have read:articles access in Team B (viewer)")
 	}
-	ok, err = userTeamB.Can(ctx, "create:articles")
+	ok, err = userTeamB.Can(ctx, "create:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -234,23 +234,23 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Clean up Team A's writer role and Team B's viewer role
-	err = userTeamA.RemoveRole(ctx, "writer")
+	err = userTeamA.RemoveRole(ctx, "writer", "web")
 	if err != nil {
 		t.Fatalf("failed to remove writer role from Team A: %v", err)
 	}
-	err = userTeamB.RemoveRole(ctx, "viewer")
+	err = userTeamB.RemoveRole(ctx, "viewer", "web")
 	if err != nil {
 		t.Fatalf("failed to remove viewer role from Team B: %v", err)
 	}
 
 	// Give direct permission override in teamID
-	err = userInTeam.GivePermissionTo(ctx, "admin:settings")
+	err = userInTeam.GivePermissionTo(ctx, "admin:settings", "web")
 	if err != nil {
 		t.Fatalf("failed to give direct permission: %v", err)
 	}
 
 	// Verify direct permission works
-	ok, err = userInTeam.Can(ctx, "admin:settings")
+	ok, err = userInTeam.Can(ctx, "admin:settings", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Verify other team has no direct permission
-	ok, err = userInOtherTeam.Can(ctx, "admin:settings")
+	ok, err = userInOtherTeam.Can(ctx, "admin:settings", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -268,13 +268,13 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Revoke direct permission
-	err = userInTeam.RevokePermissionTo(ctx, "admin:settings")
+	err = userInTeam.RevokePermissionTo(ctx, "admin:settings", "web")
 	if err != nil {
 		t.Fatalf("failed to revoke direct permission: %v", err)
 	}
 
 	// Verify direct permission revoked
-	ok, err = userInTeam.Can(ctx, "admin:settings")
+	ok, err = userInTeam.Can(ctx, "admin:settings", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}
@@ -283,13 +283,13 @@ func TestIntegration_Postgres(t *testing.T) {
 	}
 
 	// Revoke role viewer
-	err = userInTeam.RemoveRole(ctx, "viewer")
+	err = userInTeam.RemoveRole(ctx, "viewer", "web")
 	if err != nil {
 		t.Fatalf("failed to remove role: %v", err)
 	}
 
 	// Verify role revoked
-	ok, err = userInTeam.Can(ctx, "read:articles")
+	ok, err = userInTeam.Can(ctx, "read:articles", "web")
 	if err != nil {
 		t.Fatalf("Can failed: %v", err)
 	}

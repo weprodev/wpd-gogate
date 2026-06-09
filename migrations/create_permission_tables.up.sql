@@ -30,16 +30,18 @@ CREATE TABLE IF NOT EXISTS role_has_permissions (
     role_id       UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     PRIMARY KEY (permission_id, role_id)
 );
+CREATE INDEX IF NOT EXISTS idx_role_has_permissions_role_id ON role_has_permissions (role_id);
 
 -- =====================================================
 -- 4. model_has_roles
 -- =====================================================
 CREATE TABLE IF NOT EXISTS model_has_roles (
-    role_id    UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    model_type TEXT NOT NULL,
-    model_id   UUID NOT NULL,
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_id    UUID        NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    model_type TEXT        NOT NULL,
+    model_id   UUID        NOT NULL,
     team_id    UUID, -- Optional team_id/workspace_id foreign key for scoping
-    PRIMARY KEY (role_id, model_id, model_type, team_id)
+    CONSTRAINT model_has_roles_unique UNIQUE NULLS NOT DISTINCT (role_id, model_id, model_type, team_id)
 );
 CREATE INDEX IF NOT EXISTS idx_model_has_roles_lookup ON model_has_roles (model_id, model_type, team_id);
 
@@ -47,10 +49,18 @@ CREATE INDEX IF NOT EXISTS idx_model_has_roles_lookup ON model_has_roles (model_
 -- 5. model_has_permissions
 -- =====================================================
 CREATE TABLE IF NOT EXISTS model_has_permissions (
-    permission_id UUID NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-    model_type    TEXT NOT NULL,
-    model_id      UUID NOT NULL,
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    permission_id UUID        NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+    model_type    TEXT        NOT NULL,
+    model_id      UUID        NOT NULL,
     team_id       UUID, -- Optional team_id/workspace_id foreign key for scoping
-    PRIMARY KEY (permission_id, model_id, model_type, team_id)
+    CONSTRAINT model_has_permissions_unique UNIQUE NULLS NOT DISTINCT (permission_id, model_id, model_type, team_id)
 );
 CREATE INDEX IF NOT EXISTS idx_model_has_permissions_lookup ON model_has_permissions (model_id, model_type, team_id);
+
+-- =====================================================
+-- 6. Additional indexes
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_roles_guard_name ON roles (guard_name);
+CREATE INDEX IF NOT EXISTS idx_permissions_guard_name ON permissions (guard_name);
+

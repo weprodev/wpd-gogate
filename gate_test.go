@@ -20,11 +20,11 @@ func TestGate_LoadPolicy(t *testing.T) {
 	gate := NewGate(db, nil)
 
 	// Mock the query that loads role-permission associations
-	mock.ExpectQuery(`SELECT r.name, p.name FROM role_has_permissions rhp JOIN roles r ON r.id = rhp.role_id JOIN permissions p ON p.id = rhp.permission_id`).
-		WillReturnRows(sqlmock.NewRows([]string{"role_name", "permission_name"}).
-			AddRow("admin", "create:templates").
-			AddRow("admin", "delete:templates").
-			AddRow("member", "read:templates"),
+	mock.ExpectQuery(`SELECT r.guard_name, r.name, p.name FROM role_has_permissions rhp JOIN roles r ON r.id = rhp.role_id JOIN permissions p ON p.id = rhp.permission_id`).
+		WillReturnRows(sqlmock.NewRows([]string{"guard_name", "role_name", "permission_name"}).
+			AddRow("web", "admin", "create:templates").
+			AddRow("web", "admin", "delete:templates").
+			AddRow("web", "member", "read:templates"),
 		)
 
 	if err := gate.LoadPolicy(context.Background()); err != nil {
@@ -36,19 +36,19 @@ func TestGate_LoadPolicy(t *testing.T) {
 	}
 
 	// Verify the in-memory cache
-	if !gate.HasRolePermission("admin", "create:templates") {
+	if !gate.HasRolePermission("web", "admin", "create:templates") {
 		t.Error("expected admin to have create:templates")
 	}
-	if !gate.HasRolePermission("admin", "delete:templates") {
+	if !gate.HasRolePermission("web", "admin", "delete:templates") {
 		t.Error("expected admin to have delete:templates")
 	}
-	if gate.HasRolePermission("admin", "read:templates") {
+	if gate.HasRolePermission("web", "admin", "read:templates") {
 		t.Error("did not expect admin to have read:templates")
 	}
-	if !gate.HasRolePermission("member", "read:templates") {
+	if !gate.HasRolePermission("web", "member", "read:templates") {
 		t.Error("expected member to have read:templates")
 	}
-	if gate.HasRolePermission("nonexistent", "read:templates") {
+	if gate.HasRolePermission("web", "nonexistent", "read:templates") {
 		t.Error("did not expect nonexistent role to have read:templates")
 	}
 }
@@ -62,13 +62,13 @@ func TestGate_Check(t *testing.T) {
 
 	gate := NewGate(db, nil)
 	gate.rolePermissions = map[string]map[string]bool{
-		"admin": {
+		"web:admin": {
 			"create:templates": true,
 		},
-		"writer": {
+		"web:writer": {
 			"create:articles": true,
 		},
-		"viewer": {
+		"web:viewer": {
 			"read:articles": true,
 		},
 	}
@@ -79,11 +79,11 @@ func TestGate_Check(t *testing.T) {
 	permission := "create:templates"
 
 	t.Run("Direct Permission Match", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
-			WithArgs(modelType, modelID, teamID, permission).
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$5 AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$5 AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permission, teamID).
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("permission", permission))
 
-		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, teamID)
+		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, "web", teamID)
 		if err != nil {
 			t.Fatalf("Check failed: %v", err)
 		}
@@ -97,11 +97,11 @@ func TestGate_Check(t *testing.T) {
 	})
 
 	t.Run("Role Permission Match", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
-			WithArgs(modelType, modelID, teamID, permission).
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$5 AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$5 AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permission, teamID).
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "admin"))
 
-		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, teamID)
+		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, "web", teamID)
 		if err != nil {
 			t.Fatalf("Check failed: %v", err)
 		}
@@ -115,11 +115,11 @@ func TestGate_Check(t *testing.T) {
 	})
 
 	t.Run("Access Denied", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
-			WithArgs(modelType, modelID, teamID, permission).
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$5 AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$5 AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permission, teamID).
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "guest"))
 
-		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, teamID)
+		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, "web", teamID)
 		if err != nil {
 			t.Fatalf("Check failed: %v", err)
 		}
@@ -138,17 +138,17 @@ func TestGate_Check(t *testing.T) {
 		permCreate := "create:articles"
 
 		// 1. Query for workspace A should look up roles scoped to workspace A
-		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
-			WithArgs(modelType, modelID, workspaceA, permCreate).
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$5 AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$5 AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permCreate, workspaceA).
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "writer"))
 
 		// 2. Query for workspace B should look up roles scoped to workspace B
-		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3 AND p.name = \$4`).
-			WithArgs(modelType, modelID, workspaceB, permCreate).
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$5 AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$5 AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permCreate, workspaceB).
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("role", "viewer"))
 
 		// Check workspace A (should be allowed via writer role)
-		allowedA, err := gate.Check(context.Background(), modelType, modelID, permCreate, workspaceA)
+		allowedA, err := gate.Check(context.Background(), modelType, modelID, permCreate, "web", workspaceA)
 		if err != nil {
 			t.Fatalf("Check failed for workspace A: %v", err)
 		}
@@ -157,12 +157,31 @@ func TestGate_Check(t *testing.T) {
 		}
 
 		// Check workspace B (should be denied since viewer doesn't have create:articles)
-		allowedB, err := gate.Check(context.Background(), modelType, modelID, permCreate, workspaceB)
+		allowedB, err := gate.Check(context.Background(), modelType, modelID, permCreate, "web", workspaceB)
 		if err != nil {
 			t.Fatalf("Check failed for workspace B: %v", err)
 		}
 		if allowedB {
 			t.Error("expected check to be denied in workspace B (viewer)")
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unfulfilled expectations: %v", err)
+		}
+	})
+
+	t.Run("Empty GuardName and Nil TeamID", func(t *testing.T) {
+		// Expect the query with IS NULL for team_id and "web" for guard_name (the default)
+		mock.ExpectQuery(`SELECT 'role' AS type, r.name AS value FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NULL AND r.guard_name = \$3 UNION ALL SELECT 'permission' AS type, p.name AS value FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NULL AND p.name = \$4 AND p.guard_name = \$3`).
+			WithArgs(modelType, modelID, "web", permission).
+			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("permission", permission))
+
+		allowed, err := gate.Check(context.Background(), modelType, modelID, permission, "", nil)
+		if err != nil {
+			t.Fatalf("Check failed: %v", err)
+		}
+		if !allowed {
+			t.Error("expected check to be allowed via direct permission with empty guard name and nil team ID")
 		}
 
 		if err := mock.ExpectationsWereMet(); err != nil {
@@ -182,15 +201,15 @@ func TestModelRef_AssignAndRemoveRole(t *testing.T) {
 	user := gate.Model("users", "user-uuid", "team-uuid")
 
 	t.Run("Assign Role Success", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 LIMIT 1`).
-			WithArgs("admin").
+		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("admin", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("role-uuid-1"))
 
 		mock.ExpectExec(`INSERT INTO model_has_roles \(role_id, model_type, model_id, team_id\) VALUES \(\$1, \$2, \$3, \$4\) ON CONFLICT \(role_id, model_id, model_type, team_id\) DO NOTHING`).
 			WithArgs("role-uuid-1", "users", "user-uuid", "team-uuid").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
-		if err := user.AssignRole(context.Background(), "admin"); err != nil {
+		if err := user.AssignRole(context.Background(), "admin", "web"); err != nil {
 			t.Fatalf("AssignRole failed: %v", err)
 		}
 
@@ -200,11 +219,11 @@ func TestModelRef_AssignAndRemoveRole(t *testing.T) {
 	})
 
 	t.Run("Assign Role Nonexistent", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 LIMIT 1`).
-			WithArgs("superadmin").
+		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("superadmin", "web").
 			WillReturnError(sql.ErrNoRows)
 
-		err := user.AssignRole(context.Background(), "superadmin")
+		err := user.AssignRole(context.Background(), "superadmin", "web")
 		if err == nil || !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("expected ErrNoRows, got %v", err)
 		}
@@ -215,15 +234,15 @@ func TestModelRef_AssignAndRemoveRole(t *testing.T) {
 	})
 
 	t.Run("Remove Role", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 LIMIT 1`).
-			WithArgs("admin").
+		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("admin", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("role-uuid-1"))
 
-		mock.ExpectExec(`DELETE FROM model_has_roles WHERE role_id = \$1 AND model_type = \$2 AND model_id = \$3 AND team_id IS NOT DISTINCT FROM \$4`).
+		mock.ExpectExec(`DELETE FROM model_has_roles WHERE role_id = \$1 AND model_type = \$2 AND model_id = \$3 AND team_id = \$4`).
 			WithArgs("role-uuid-1", "users", "user-uuid", "team-uuid").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
-		if err := user.RemoveRole(context.Background(), "admin"); err != nil {
+		if err := user.RemoveRole(context.Background(), "admin", "web"); err != nil {
 			t.Fatalf("RemoveRole failed: %v", err)
 		}
 
@@ -244,15 +263,15 @@ func TestModelRef_GiveAndRevokePermission(t *testing.T) {
 	user := gate.Model("users", "user-uuid", "team-uuid")
 
 	t.Run("Give Permission Success", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 LIMIT 1`).
-			WithArgs("edit:posts").
+		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("edit:posts", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("permission-uuid-1"))
 
 		mock.ExpectExec(`INSERT INTO model_has_permissions \(permission_id, model_type, model_id, team_id\) VALUES \(\$1, \$2, \$3, \$4\) ON CONFLICT \(permission_id, model_id, model_type, team_id\) DO NOTHING`).
 			WithArgs("permission-uuid-1", "users", "user-uuid", "team-uuid").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
-		if err := user.GivePermissionTo(context.Background(), "edit:posts"); err != nil {
+		if err := user.GivePermissionTo(context.Background(), "edit:posts", "web"); err != nil {
 			t.Fatalf("GivePermissionTo failed: %v", err)
 		}
 
@@ -262,15 +281,15 @@ func TestModelRef_GiveAndRevokePermission(t *testing.T) {
 	})
 
 	t.Run("Revoke Permission", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 LIMIT 1`).
-			WithArgs("edit:posts").
+		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("edit:posts", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("permission-uuid-1"))
 
-		mock.ExpectExec(`DELETE FROM model_has_permissions WHERE permission_id = \$1 AND model_type = \$2 AND model_id = \$3 AND team_id IS NOT DISTINCT FROM \$4`).
+		mock.ExpectExec(`DELETE FROM model_has_permissions WHERE permission_id = \$1 AND model_type = \$2 AND model_id = \$3 AND team_id = \$4`).
 			WithArgs("permission-uuid-1", "users", "user-uuid", "team-uuid").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
-		if err := user.RevokePermissionTo(context.Background(), "edit:posts"); err != nil {
+		if err := user.RevokePermissionTo(context.Background(), "edit:posts", "web"); err != nil {
 			t.Fatalf("RevokePermissionTo failed: %v", err)
 		}
 
@@ -288,15 +307,15 @@ func TestRoleRef_GiveAndRevokePermission(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
-	role := gate.Role("admin")
+	role := gate.Role("admin", "web")
 
 	t.Run("Give Permission to Role", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 LIMIT 1`).
-			WithArgs("admin").
+		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("admin", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("role-uuid-1"))
 
-		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 LIMIT 1`).
-			WithArgs("edit:posts").
+		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("edit:posts", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("permission-uuid-1"))
 
 		mock.ExpectExec(`INSERT INTO role_has_permissions \(permission_id, role_id\) VALUES \(\$1, \$2\) ON CONFLICT \(permission_id, role_id\) DO NOTHING`).
@@ -312,18 +331,18 @@ func TestRoleRef_GiveAndRevokePermission(t *testing.T) {
 		}
 
 		// Cache should be updated in memory instantly
-		if !gate.HasRolePermission("admin", "edit:posts") {
+		if !gate.HasRolePermission("web", "admin", "edit:posts") {
 			t.Error("expected cache to have edit:posts for admin role")
 		}
 	})
 
 	t.Run("Revoke Permission from Role", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 LIMIT 1`).
-			WithArgs("admin").
+		mock.ExpectQuery(`SELECT id FROM roles WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("admin", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("role-uuid-1"))
 
-		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 LIMIT 1`).
-			WithArgs("edit:posts").
+		mock.ExpectQuery(`SELECT id FROM permissions WHERE name = \$1 AND guard_name = \$2 LIMIT 1`).
+			WithArgs("edit:posts", "web").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("permission-uuid-1"))
 
 		mock.ExpectExec(`DELETE FROM role_has_permissions WHERE permission_id = \$1 AND role_id = \$2`).
@@ -339,7 +358,7 @@ func TestRoleRef_GiveAndRevokePermission(t *testing.T) {
 		}
 
 		// Cache should be removed in memory instantly
-		if gate.HasRolePermission("admin", "edit:posts") {
+		if gate.HasRolePermission("web", "admin", "edit:posts") {
 			t.Error("expected cache NOT to have edit:posts for admin role anymore")
 		}
 	})
@@ -365,7 +384,7 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 	user := gate.Model("users", "user-uuid", "team-uuid")
 
 	t.Run("GetRoleNames", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3`).
+		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer").AddRow("editor"))
 
@@ -381,7 +400,7 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 	})
 
 	t.Run("GetDirectPermissions", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3`).
+		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
 
@@ -397,7 +416,7 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 	})
 
 	t.Run("GetPermissionsViaRoles", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3`).
+		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer").AddRow("editor"))
 
@@ -418,12 +437,12 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 
 	t.Run("GetAllPermissions", func(t *testing.T) {
 		// Direct permissions
-		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id IS NOT DISTINCT FROM \$3`).
+		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
 
 		// Roles
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id IS NOT DISTINCT FROM \$3`).
+		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
 
@@ -442,3 +461,128 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 		}
 	})
 }
+
+func TestModelRef_RBAC_Helpers(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+
+	gate := NewGate(db, nil)
+	gate.rolePermissions = map[string]map[string]bool{
+		"writer": {
+			"edit:articles": true,
+		},
+		"editor": {
+			"publish:articles": true,
+		},
+	}
+
+	user := gate.Model("users", "user-uuid", "team-uuid")
+
+	t.Run("HasRole - True", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT EXISTS \( SELECT 1 FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND r.name = \$3 AND r.guard_name = \$4 AND mhr.team_id = \$5 \)`).
+			WithArgs("users", "user-uuid", "writer", "web", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+		ok, err := user.HasRole(context.Background(), "writer", "web")
+		if err != nil {
+			t.Fatalf("HasRole failed: %v", err)
+		}
+		if !ok {
+			t.Error("expected user to have role writer")
+		}
+	})
+
+	t.Run("HasRole - False", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT EXISTS \( SELECT 1 FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND r.name = \$3 AND r.guard_name = \$4 AND mhr.team_id = \$5 \)`).
+			WithArgs("users", "user-uuid", "admin", "web", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		ok, err := user.HasRole(context.Background(), "admin", "web")
+		if err != nil {
+			t.Fatalf("HasRole failed: %v", err)
+		}
+		if ok {
+			t.Error("did not expect user to have role admin")
+		}
+	})
+
+	t.Run("HasAnyRole", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
+
+		ok, err := user.HasAnyRole(context.Background(), "web", "admin", "writer")
+		if err != nil {
+			t.Fatalf("HasAnyRole failed: %v", err)
+		}
+		if !ok {
+			t.Error("expected user to have at least one of the roles")
+		}
+	})
+
+	t.Run("HasAllRoles", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
+
+		ok, err := user.HasAllRoles(context.Background(), "web", "writer")
+		if err != nil {
+			t.Fatalf("HasAllRoles failed: %v", err)
+		}
+		if !ok {
+			t.Error("expected user to have all specified roles")
+		}
+
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
+
+		ok, err = user.HasAllRoles(context.Background(), "web", "writer", "admin")
+		if err != nil {
+			t.Fatalf("HasAllRoles failed: %v", err)
+		}
+		if ok {
+			t.Error("did not expect user to have all specified roles")
+		}
+	})
+
+	t.Run("HasAnyPermission", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
+
+		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
+
+		ok, err := user.HasAnyPermission(context.Background(), "edit:articles", "delete:articles")
+		if err != nil {
+			t.Fatalf("HasAnyPermission failed: %v", err)
+		}
+		if !ok {
+			t.Error("expected user to have edit:articles via writer role")
+		}
+	})
+
+	t.Run("HasAllPermissions", func(t *testing.T) {
+		mock.ExpectQuery(`SELECT p.name FROM model_has_permissions mhp JOIN permissions p ON p.id = mhp.permission_id WHERE mhp.model_type = \$1 AND mhp.model_id = \$2 AND mhp.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
+
+		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+			WithArgs("users", "user-uuid", "team-uuid").
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
+
+		ok, err := user.HasAllPermissions(context.Background(), "edit:articles", "admin:override")
+		if err != nil {
+			t.Fatalf("HasAllPermissions failed: %v", err)
+		}
+		if !ok {
+			t.Error("expected user to have both permissions")
+		}
+	})
+}
+
