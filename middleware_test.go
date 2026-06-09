@@ -82,7 +82,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
-		
+
 		handler := RequirePermission(gate, "edit_post", nil)(func(c echo.Context) error {
 			return c.String(http.StatusOK, "success")
 		})
@@ -104,7 +104,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
 		c.Set("userID", "user1")
-		
+
 		opts := DefaultMiddlewareOptions()
 		opts.ExtractTeamID = func(c echo.Context) (any, error) {
 			return nil, errors.New("team id extraction failed")
@@ -199,7 +199,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
-	
+
 	t.Run("CustomOptions", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		assert.NoError(t, err)
@@ -209,12 +209,12 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
 		c := e.NewContext(req, rec)
-		
+
 		opts := DefaultMiddlewareOptions()
 		opts.ExtractModelID = func(c echo.Context) (any, error) { return "custom_user", nil }
 		opts.ExtractTeamID = func(c echo.Context) (any, error) { return "custom_team", nil }
 		opts.GuardName = "api"
-		
+
 		mock.ExpectQuery(`SELECT 'role' AS type`).
 			WithArgs("users", "custom_user", "api", "edit_post", "custom_team").
 			WillReturnRows(sqlmock.NewRows([]string{"type", "value"}).AddRow("permission", "edit_post"))

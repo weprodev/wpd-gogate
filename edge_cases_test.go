@@ -21,7 +21,7 @@ func TestEdgeCases(t *testing.T) {
 		assert.True(t, IsNilOrEmpty(nil))
 		assert.True(t, IsNilOrEmpty(""))
 		assert.False(t, IsNilOrEmpty("not empty"))
-		
+
 		var strPtr *string
 		assert.True(t, IsNilOrEmpty(strPtr))
 
@@ -30,10 +30,10 @@ func TestEdgeCases(t *testing.T) {
 
 		var emptyUUID [16]byte
 		assert.True(t, IsNilOrEmpty(emptyUUID))
-		
+
 		validUUID := [16]byte{1}
 		assert.False(t, IsNilOrEmpty(validUUID))
-		
+
 		assert.False(t, IsNilOrEmpty(123)) // integer is not checked for empty in the func, so it defaults to false
 	})
 
@@ -59,7 +59,7 @@ func TestEdgeCases(t *testing.T) {
 		err := role.RevokePermissionTo(ctx, "nonexistent")
 		assert.NoError(t, err) // Should ignore ErrNoRows
 	})
-	
+
 	t.Run("Role_RevokePermissionTo_RoleErrNoRows", func(t *testing.T) {
 		mock.ExpectQuery(`SELECT id FROM roles`).WillReturnError(sql.ErrNoRows)
 		err := role.RevokePermissionTo(ctx, "nonexistent")
@@ -106,7 +106,7 @@ func TestEdgeCases(t *testing.T) {
 		gate.mu.Lock()
 		gate.rolePermissions = map[string]map[string]bool{
 			"web:admin": {
-				"edit": true,
+				"edit":   true,
 				"delete": true,
 			},
 		}
