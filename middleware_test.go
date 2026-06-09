@@ -30,7 +30,8 @@ func TestMiddleware_DefaultMiddlewareOptions(t *testing.T) {
 	assert.Error(t, err)
 
 	// Test ExtractModelID from portal_user_id ctx
-	ctx := context.WithValue(req.Context(), "portal_user_id", "ctx_user")
+	type contextKey string
+	ctx := context.WithValue(req.Context(), contextKey("portal_user_id"), "ctx_user")
 	req2 := req.WithContext(ctx)
 	c2 := e.NewContext(req2, rec)
 	id, err := opts.ExtractModelID(c2)
@@ -76,7 +77,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("MissingModelID", func(t *testing.T) {
 		db, _, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -97,7 +98,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("ExtractTeamIDError", func(t *testing.T) {
 		db, _, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -124,7 +125,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("CheckError", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -151,7 +152,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("AccessDenied", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -178,7 +179,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("AccessGranted", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -203,7 +204,7 @@ func TestMiddleware_RequirePermission(t *testing.T) {
 	t.Run("CustomOptions", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		assert.NoError(t, err)
-		defer db.Close()
+		defer db.Close() //nolint:errcheck
 		gate := NewGate(db, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)

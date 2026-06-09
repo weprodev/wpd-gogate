@@ -12,7 +12,7 @@ import (
 func TestGate_ErrorPaths(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()

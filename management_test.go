@@ -12,7 +12,7 @@ import (
 func TestGate_CreateRole(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()
@@ -52,7 +52,7 @@ func TestGate_CreateRole(t *testing.T) {
 func TestGate_CreatePermission(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()
@@ -92,7 +92,7 @@ func TestGate_CreatePermission(t *testing.T) {
 func TestGate_DeleteRole(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestGate_DeleteRole(t *testing.T) {
 func TestGate_DeletePermission(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()
@@ -152,7 +152,7 @@ func TestGate_DeletePermission(t *testing.T) {
 func TestGate_GetAllRolesMap(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()
@@ -205,7 +205,7 @@ func TestGate_GetAllRolesMap(t *testing.T) {
 func TestGate_GetAllPermissionsMap(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	gate := NewGate(db, nil)
 	ctx := context.Background()

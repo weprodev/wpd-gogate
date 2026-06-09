@@ -44,7 +44,7 @@ The package utilizes 5 tables:
 5. `model_has_permissions`: Assigns direct permission overrides to models (e.g., giving a specific user `articles.delete` even if their role doesn't allow it, also scoped by `team_id`).
 
 ### The `team_id` Architecture
-Both `model_has_roles` and `model_has_permissions` contain an optional `team_id UUID` column. This is the foundation for multi-tenant and workspace-scoped authorization. 
+Both `model_has_roles` and `model_has_permissions` contain an optional `team_id UUID` column. This is the foundation for multi-tenant and workspace-scoped authorization.
 - If a user is assigned a role with `team_id = NULL`, it is a **global** role.
 - If assigned with a specific `team_id`, the user only possesses that role/permission when operating within the context of that specific team.
 The `team_id` column is built into the Primary Key of these tables to allow a user to hold different roles across different teams.

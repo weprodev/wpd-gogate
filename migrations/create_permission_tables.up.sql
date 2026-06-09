@@ -63,4 +63,3 @@ CREATE INDEX IF NOT EXISTS idx_model_has_permissions_lookup ON model_has_permiss
 -- =====================================================
 CREATE INDEX IF NOT EXISTS idx_roles_guard_name ON roles (guard_name);
 CREATE INDEX IF NOT EXISTS idx_permissions_guard_name ON permissions (guard_name);
-

@@ -92,7 +92,7 @@ func (g *Gate) GetAllRolesMap(ctx context.Context) (map[string][]string, error) 
 	if err != nil {
 		return nil, fmt.Errorf("wpd-gogate: get all roles: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	rolesMap := make(map[string][]string)
 	for rows.Next() {
@@ -115,7 +115,7 @@ func (g *Gate) GetAllPermissionsMap(ctx context.Context) (map[string][]string, e
 	if err != nil {
 		return nil, fmt.Errorf("wpd-gogate: get all permissions: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	permsMap := make(map[string][]string)
 	for rows.Next() {
