@@ -30,8 +30,8 @@ func TestMiddleware_DefaultMiddlewareOptions(t *testing.T) {
 	assert.Error(t, err)
 
 	// Test ExtractModelID from portal_user_id ctx
-	type contextKey string
-	ctx := context.WithValue(req.Context(), contextKey("portal_user_id"), "ctx_user")
+	//nolint:staticcheck // testing primitive string key extraction
+	ctx := context.WithValue(req.Context(), "portal_user_id", "ctx_user")
 	req2 := req.WithContext(ctx)
 	c2 := e.NewContext(req2, rec)
 	id, err := opts.ExtractModelID(c2)
