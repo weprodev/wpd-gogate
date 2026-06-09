@@ -3,8 +3,14 @@ package gogate
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
+)
+
+var (
+	ErrRoleAlreadyExists       = errors.New("wpd-gogate: role already exists")
+	ErrPermissionAlreadyExists = errors.New("wpd-gogate: permission already exists")
 )
 
 // DBTX is the minimal database interface required by wpd-gogate.

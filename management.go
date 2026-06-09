@@ -15,9 +15,14 @@ func (g *Gate) CreateRole(ctx context.Context, name string, guardName string) er
 		ON CONFLICT (name, guard_name) DO NOTHING
 	`, g.cfg.RolesTable)
 
-	_, err := g.db.ExecContext(ctx, query, name, guardName)
+	res, err := g.db.ExecContext(ctx, query, name, guardName)
 	if err != nil {
 		return fmt.Errorf("wpd-gogate: create role %q: %w", name, err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		return ErrRoleAlreadyExists
 	}
 
 	return nil
@@ -33,9 +38,14 @@ func (g *Gate) CreatePermission(ctx context.Context, name string, guardName stri
 		ON CONFLICT (name, guard_name) DO NOTHING
 	`, g.cfg.PermissionsTable)
 
-	_, err := g.db.ExecContext(ctx, query, name, guardName)
+	res, err := g.db.ExecContext(ctx, query, name, guardName)
 	if err != nil {
 		return fmt.Errorf("wpd-gogate: create permission %q: %w", name, err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		return ErrPermissionAlreadyExists
 	}
 
 	return nil
@@ -73,4 +83,50 @@ func (g *Gate) DeletePermission(ctx context.Context, name string) error {
 	g.mu.Unlock()
 
 	return nil
+}
+
+// GetAllRolesMap returns all roles in the database, grouped by guard_name.
+func (g *Gate) GetAllRolesMap(ctx context.Context) (map[string][]string, error) {
+	query := fmt.Sprintf("SELECT guard_name, name FROM %s", g.cfg.RolesTable)
+	rows, err := g.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("wpd-gogate: get all roles: %w", err)
+	}
+	defer rows.Close()
+
+	rolesMap := make(map[string][]string)
+	for rows.Next() {
+		var guardName, name string
+		if err := rows.Scan(&guardName, &name); err != nil {
+			return nil, fmt.Errorf("wpd-gogate: scan role row: %w", err)
+		}
+		rolesMap[guardName] = append(rolesMap[guardName], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("wpd-gogate: read role rows: %w", err)
+	}
+	return rolesMap, nil
+}
+
+// GetAllPermissionsMap returns all permissions in the database, grouped by guard_name.
+func (g *Gate) GetAllPermissionsMap(ctx context.Context) (map[string][]string, error) {
+	query := fmt.Sprintf("SELECT guard_name, name FROM %s", g.cfg.PermissionsTable)
+	rows, err := g.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("wpd-gogate: get all permissions: %w", err)
+	}
+	defer rows.Close()
+
+	permsMap := make(map[string][]string)
+	for rows.Next() {
+		var guardName, name string
+		if err := rows.Scan(&guardName, &name); err != nil {
+			return nil, fmt.Errorf("wpd-gogate: scan permission row: %w", err)
+		}
+		permsMap[guardName] = append(permsMap[guardName], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("wpd-gogate: read permission rows: %w", err)
+	}
+	return permsMap, nil
 }
