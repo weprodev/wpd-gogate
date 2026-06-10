@@ -233,7 +233,7 @@ func (m *ModelRef) GetDirectPermissions(ctx context.Context) ([]string, error) {
 
 // GetPermissionsViaRoles returns all permissions inherited by the model's roles.
 func (m *ModelRef) GetPermissionsViaRoles(ctx context.Context) ([]string, error) {
-	roles, err := m.GetRoleNames(ctx)
+	rolesMap, err := m.GetRolesMap(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +242,13 @@ func (m *ModelRef) GetPermissionsViaRoles(ctx context.Context) ([]string, error)
 	defer m.gate.mu.RUnlock()
 
 	permSet := make(map[string]bool)
-	for _, r := range roles {
-		if perms, ok := m.gate.rolePermissions[r]; ok {
-			for p := range perms {
-				permSet[p] = true
+	for guardName, roles := range rolesMap {
+		for _, r := range roles {
+			cacheKey := guardName + ":" + r
+			if perms, ok := m.gate.rolePermissions[cacheKey]; ok {
+				for p := range perms {
+					permSet[p] = true
+				}
 			}
 		}
 	}

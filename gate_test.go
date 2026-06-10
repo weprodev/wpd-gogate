@@ -373,10 +373,10 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 
 	gate := NewGate(db, nil)
 	gate.rolePermissions = map[string]map[string]bool{
-		"writer": {
+		"web:writer": {
 			"edit:articles": true,
 		},
-		"editor": {
+		"web:editor": {
 			"publish:articles": true,
 		},
 	}
@@ -416,9 +416,9 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 	})
 
 	t.Run("GetPermissionsViaRoles", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
-			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer").AddRow("editor"))
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web").AddRow("editor", "web"))
 
 		perms, err := user.GetPermissionsViaRoles(context.Background())
 		if err != nil {
@@ -442,9 +442,9 @@ func TestModelRef_ListingHelpers(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
 
 		// Roles
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
-			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
 
 		perms, err := user.GetAllPermissions(context.Background())
 		if err != nil {
@@ -471,10 +471,10 @@ func TestModelRef_RBAC_Helpers(t *testing.T) {
 
 	gate := NewGate(db, nil)
 	gate.rolePermissions = map[string]map[string]bool{
-		"writer": {
+		"web:writer": {
 			"edit:articles": true,
 		},
-		"editor": {
+		"web:editor": {
 			"publish:articles": true,
 		},
 	}
@@ -554,9 +554,9 @@ func TestModelRef_RBAC_Helpers(t *testing.T) {
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
 
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
-			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
 
 		ok, err := user.HasAnyPermission(context.Background(), "edit:articles", "delete:articles")
 		if err != nil {
@@ -572,9 +572,9 @@ func TestModelRef_RBAC_Helpers(t *testing.T) {
 			WithArgs("users", "user-uuid", "team-uuid").
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("admin:override"))
 
-		mock.ExpectQuery(`SELECT r.name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
+		mock.ExpectQuery(`SELECT r.name, r.guard_name FROM model_has_roles mhr JOIN roles r ON r.id = mhr.role_id WHERE mhr.model_type = \$1 AND mhr.model_id = \$2 AND mhr.team_id = \$3`).
 			WithArgs("users", "user-uuid", "team-uuid").
-			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("writer"))
+			WillReturnRows(sqlmock.NewRows([]string{"name", "guard_name"}).AddRow("writer", "web"))
 
 		ok, err := user.HasAllPermissions(context.Background(), "edit:articles", "admin:override")
 		if err != nil {
