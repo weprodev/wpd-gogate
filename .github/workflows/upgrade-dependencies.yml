@@ -6,14 +6,16 @@ run-name: Upgrade Go dependencies
 # Cannot call weprodev/shared-workflows (private) from a public caller.
 #
 # Needs vars.SLACK_ALERTS_CHANNEL_ID and secrets.SLACK_BOT_TOKEN.
-# Set the GitHub App client ID and private key so the pull request triggers CI.
-# The App is not granted workflows:write, so ci.yml GO_VERSION pins are noted
-# in the PR body for a manual bump instead of being edited automatically.
 #
-# Upgraded module code runs only in go-test. That job gets a read-only
-# GITHUB_TOKEN and no secrets, because a compromised module can read anything
-# the job holds. go-pr rejects patches that touch files other than go.mod
-# and go.sum.
+# Pull requests are opened with GITHUB_TOKEN. The org GitHub App installation
+# on this public repo is not granted contents/pull-requests write, so
+# create-github-app-token fails with 422 if those permissions are requested,
+# and an inherited App token cannot push the upgrade branch either.
+# Trade-off: GITHUB_TOKEN PRs do not start new workflow runs; re-run CI or
+# push an empty commit on the PR branch if checks must appear.
+#
+# Upgraded module code runs only in go-test (no secrets). go-pr rejects
+# patches that touch files other than go.mod and go.sum.
 
 on:
   schedule:
@@ -46,8 +48,6 @@ jobs:
     env:
       SLACK_CHANNEL_ID: ${{ vars.SLACK_ALERTS_CHANNEL_ID }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      APP_CLIENT_ID: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
       TARGET_GO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_go_version || '' }}
     steps:
       - name: Check required settings
@@ -56,8 +56,6 @@ jobs:
           [ -n "$SLACK_CHANNEL_ID" ] || { echo "::error::SLACK_ALERTS_CHANNEL_ID is not configured"; exit 1; }
           [[ "$SLACK_CHANNEL_ID" =~ ^[CGD][A-Z0-9]{6,}$ ]] || { echo "::error::SLACK_ALERTS_CHANNEL_ID is not a Slack channel ID"; exit 1; }
           [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::SLACK_BOT_TOKEN is not configured"; exit 1; }
-          [ -n "$APP_CLIENT_ID" ] || { echo "::error::WPD_GITHUB_APP_CLIENT_ID (or APP_CLIENT_ID) is not configured"; exit 1; }
-          [ -n "$APP_PRIVATE_KEY" ] || { echo "::error::WPD_GITHUB_APP_PRIVATE_KEY (or APP_PRIVATE_KEY) is not configured"; exit 1; }
           if [ -n "$TARGET_GO" ] && ! [[ "$TARGET_GO" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "::error::target_go_version must look like 1.27.4"
             exit 1
@@ -373,25 +371,14 @@ jobs:
       operation: ${{ steps.cpr.outputs.pull-request-operation }}
       summary: ${{ steps.describe.outputs.summary }}
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3.3.0
-        with:
-          client-id: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          # Use only permissions already granted to the installation.
-          # Do not request workflows:write — this App does not have it, and
-          # requesting ungranted permissions makes token creation fail with 422.
-          permission-contents: write
-          permission-pull-requests: write
-
       - name: Checkout base commit
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
-          token: ${{ steps.app-token.outputs.token }}
+          # GITHUB_TOKEN: this job already has contents:write + pull-requests:write.
+          # Do not mint an App installation token here — installation 100483798 is
+          # not granted those writes, so permission-* requests 422.
+          token: ${{ github.token }}
 
       - name: Download patch
         uses: actions/download-artifact@v4
@@ -437,8 +424,8 @@ jobs:
           import pathlib
           import re
 
-          # Workflow files are not updated here: the GitHub App is not granted
-          # workflows:write. Call out a manual pin bump when ci.yml lags behind.
+          # GITHUB_TOKEN cannot push updates to workflow files. Call out a
+          # manual pin bump when ci.yml lags behind go.mod.
           target = os.environ["TARGET_GO"]
           notes = []
           path = pathlib.Path(".github/workflows/ci.yml")
@@ -450,7 +437,8 @@ jobs:
               if match and match.group(1) != target:
                   notes.append(
                       f"- `.github/workflows/ci.yml` still pins `{match.group(1)}`; "
-                      f"bump `GO_VERSION` to `{target}` manually (App lacks workflows:write)."
+                      f"bump `GO_VERSION` to `{target}` manually "
+                      f"(GITHUB_TOKEN cannot modify workflow files)."
                   )
           pathlib.Path(os.environ["RUNNER_TEMP"], "go-pins.md").write_text(
               "\n".join(notes), encoding="utf-8"
@@ -508,6 +496,10 @@ jobs:
           body = (work / "go-upgrade" / "body.md").read_text(encoding="utf-8")[:50000]
           if pins:
               body += f"\n#### Follow-up\n\n{pins}\n"
+          body += (
+              "\n> CI may not start automatically on this PR (opened with "
+              "`GITHUB_TOKEN`). Re-run workflows or push an empty commit if checks are required.\n"
+          )
           body += "\n_Opened by the Upgrade Dependencies workflow._\n"
           (work / "go-pr-body.md").write_text(body, encoding="utf-8")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -519,7 +511,7 @@ jobs:
         id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           base: ${{ needs.prepare.outputs.base_branch }}
           branch: chore/upgrade-go-dependencies
           delete-branch: true
