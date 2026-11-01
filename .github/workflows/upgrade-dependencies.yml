@@ -2,9 +2,17 @@ name: Upgrade dependencies
 
 run-name: Upgrade Go dependencies
 
-# Weekly Go module and toolchain upgrade.
+# Weekly Go module and toolchain upgrade for this public repository.
+# Cannot call weprodev/shared-workflows (private) from a public caller.
+#
 # Needs vars.SLACK_ALERTS_CHANNEL_ID and secrets.SLACK_BOT_TOKEN.
-# Set the GitHub App client ID and private key so the pull request triggers CI.
+# Set the GitHub App client ID and private key so the pull request triggers CI
+# and can update workflow Go version pins.
+#
+# Upgraded module code runs only in go-test. That job gets a read-only
+# GITHUB_TOKEN and no secrets, because a compromised module can read anything
+# the job holds. go-pr rejects patches that touch files other than go.mod,
+# go.sum, and the GO_VERSION pin in ci.yml.
 
 on:
   schedule:
@@ -19,12 +27,14 @@ on:
         default: ""
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: upgrade-dependencies
   cancel-in-progress: false
+
+env:
+  BOT_IDENTITY: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
 
 jobs:
   validate-configuration:
@@ -37,6 +47,7 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       APP_CLIENT_ID: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
       APP_PRIVATE_KEY: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
+      TARGET_GO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_go_version || '' }}
     steps:
       - name: Check required settings
         run: |
@@ -46,29 +57,580 @@ jobs:
           [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::SLACK_BOT_TOKEN is not configured"; exit 1; }
           [ -n "$APP_CLIENT_ID" ] || { echo "::error::WPD_GITHUB_APP_CLIENT_ID (or APP_CLIENT_ID) is not configured"; exit 1; }
           [ -n "$APP_PRIVATE_KEY" ] || { echo "::error::WPD_GITHUB_APP_PRIVATE_KEY (or APP_PRIVATE_KEY) is not configured"; exit 1; }
+          if [ -n "$TARGET_GO" ] && ! [[ "$TARGET_GO" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::target_go_version must look like 1.27.4"
+            exit 1
+          fi
 
-  upgrade:
+  prepare:
+    name: Prepare
     needs: validate-configuration
-    uses: weprodev/shared-workflows/.github/workflows/upgrade-go-dependencies.yml@master
-    with:
-      base_branch: master
-      go_modules: "."
-      update_go_version: true
-      update_go_directive: true
-      update_go_dependencies: true
-      go_version_pins: older
-      target_go_version: ${{ github.event_name == 'workflow_dispatch' && inputs.target_go_version || '' }}
-      go_test_command: "go build ./... && go test -race ./..."
-      enable_postgres: true
-      postgres_image: postgres:17-alpine
-      postgres_user: test_user
-      postgres_password: test_password
-      postgres_db: test_gogate
-      postgres_port: "54322"
-      postgres_env_prefix: TEST_DB
-      slack_on_failure: true
-      slack_channel_id: ${{ vars.SLACK_ALERTS_CHANNEL_ID }}
-      wpd_github_app_client_id: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
-    secrets:
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      wpd_github_app_private_key: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      base_branch: ${{ steps.base.outputs.branch }}
+      base_sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - name: Resolve base commit
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq .object.sha)
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve branch ${branch}"
+            exit 1
+          fi
+          echo "Upgrading ${branch} at ${sha}"
+          {
+            echo "branch=${branch}"
+            echo "sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  go-update:
+    name: Go · resolve upgrades
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      has_changes: ${{ steps.package.outputs.has_changes }}
+      target_go: ${{ steps.resolve.outputs.version }}
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          persist-credentials: false
+
+      - name: Resolve Go version
+        id: resolve
+        env:
+          TARGET_GO_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.target_go_version || '' }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import time
+          import urllib.request
+
+
+          def parse(value):
+              numbers = [int(part) for part in value.split(".")]
+              while len(numbers) < 3:
+                  numbers.append(0)
+              return tuple(numbers[:3])
+
+
+          def fail(message):
+              print(f"::error::{message}")
+              sys.exit(1)
+
+
+          text = pathlib.Path("go.mod").read_text(encoding="utf-8")
+          current = re.findall(r"(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$", text)
+          current += re.findall(r"(?m)^toolchain\s+go(\d+\.\d+(?:\.\d+)?)\s*$", text)
+          highest = max(current, key=parse) if current else ""
+
+          target = os.environ["TARGET_GO_INPUT"].strip()
+          if not target:
+              request = urllib.request.Request(
+                  "https://go.dev/dl/?mode=json",
+                  headers={"User-Agent": "wpd-gogate-upgrade-dependencies"},
+              )
+              releases = None
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          releases = json.load(response)
+                      break
+                  except Exception as error:
+                      print(f"go.dev request failed: {error}")
+                      time.sleep(5 * (attempt + 1))
+              if not releases:
+                  fail("Could not read the latest Go release from go.dev")
+              stable = [release["version"] for release in releases if release.get("stable")]
+              if not stable:
+                  fail("go.dev returned no stable release")
+              target = stable[0].removeprefix("go")
+
+          if not re.fullmatch(r"\d+\.\d+(\.\d+)?", target):
+              fail(f"Invalid Go version: {target}")
+          if highest and parse(target) < parse(highest):
+              fail(f"Target Go {target} is older than {highest} in go.mod. Refusing to downgrade.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={target}\n")
+          print(f"Selected Go {target}")
+          PY
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.resolve.outputs.version }}
+          check-latest: false
+          cache: false
+
+      - name: Upgrade Go modules
+        env:
+          TARGET_GO: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/go-upgrade"
+          mkdir -p "$work/out"
+          old_go=$(awk '$1 == "go" { print $2; exit }' go.mod)
+          go list -m -json all > "$work/before.json" || rm -f "$work/before.json"
+
+          go get "go@${TARGET_GO}"
+          go get "toolchain@go${TARGET_GO}"
+          go get -u -t ./...
+          go mod tidy
+
+          new_go=$(awk '$1 == "go" { print $2; exit }' go.mod)
+          go list -m -json all > "$work/after.json" || rm -f "$work/after.json"
+          printf '%s\t%s\n' "$old_go" "$new_go" > "$work/go-versions.txt"
+
+      - name: Describe Go changes
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import json
+          import os
+          import pathlib
+
+          work = pathlib.Path(os.environ["RUNNER_TEMP"]) / "go-upgrade"
+
+
+          def load_modules(path):
+              if not path.is_file() or path.stat().st_size == 0:
+                  return {}
+              data = path.read_text(encoding="utf-8")
+              decoder = json.JSONDecoder()
+              index = 0
+              modules = {}
+              while index < len(data):
+                  while index < len(data) and data[index].isspace():
+                      index += 1
+                  if index >= len(data):
+                      break
+                  obj, index = decoder.raw_decode(data, index)
+                  if obj.get("Path") and not obj.get("Main"):
+                      modules[obj["Path"]] = (obj.get("Version", ""), bool(obj.get("Indirect", False)))
+              return modules
+
+
+          old_go, new_go = (work / "go-versions.txt").read_text(encoding="utf-8").strip().split("\t")
+          before = load_modules(work / "before.json")
+          after = load_modules(work / "after.json")
+
+          go_lines = []
+          if old_go != new_go:
+              go_lines.append(f"| `.` | `{old_go}` | `{new_go}` |")
+
+          direct_lines = []
+          indirect_count = 0
+          for path in sorted(set(before) | set(after)):
+              old_version, old_indirect = before.get(path, ("", False))
+              new_version, new_indirect = after.get(path, ("", old_indirect))
+              if old_version == new_version:
+                  continue
+              if new_indirect:
+                  indirect_count += 1
+                  continue
+              if not old_version:
+                  change = f"added `{new_version}`"
+              elif not new_version:
+                  change = f"removed `{old_version}`"
+              else:
+                  change = f"`{old_version}` → `{new_version}`"
+              direct_lines.append(f"| `{path}` | {change} |")
+
+          parts = [
+              "### Automated Go dependency upgrade",
+              "",
+              "This pull request was opened only after the upgrade passed its tests in an isolated job.",
+              "",
+              "Test command: `go build ./... && go test -race ./...`",
+              "",
+          ]
+          if go_lines:
+              parts += ["| Module | Previous Go | New Go |", "|---|---|---|", *go_lines, ""]
+          if direct_lines:
+              parts += ["| Direct dependency | Change |", "|---|---|", *direct_lines[:60], ""]
+              if len(direct_lines) > 60:
+                  parts += [f"{len(direct_lines) - 60} more direct dependencies changed.", ""]
+          if indirect_count:
+              parts += [f"{indirect_count} indirect modules changed.", ""]
+          parts += [f"Workflow run: {os.environ['RUN_URL']}", ""]
+          (work / "out" / "body.md").write_text("\n".join(parts), encoding="utf-8")
+          PY
+
+      - name: Package patch
+        id: package
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/go-upgrade"
+          git add -- go.mod go.sum
+          if git diff --cached --quiet; then
+            echo "Go modules and the Go version are already up to date."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --cached --stat
+          git diff --cached --binary > "$work/out/changes.patch"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload patch
+        if: steps.package.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-upgrade
+          path: ${{ runner.temp }}/go-upgrade/out/
+          if-no-files-found: error
+          retention-days: 1
+
+  go-test:
+    name: Go · test upgrade
+    needs: [prepare, go-update]
+    if: needs.go-update.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # No secrets: upgraded module code must not see tokens.
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_gogate
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          persist-credentials: false
+
+      - name: Download patch
+        uses: actions/download-artifact@v4
+        with:
+          name: go-upgrade
+          path: ${{ runner.temp }}/go-upgrade
+
+      - name: Apply patch
+        run: git apply --binary "$RUNNER_TEMP/go-upgrade/changes.patch"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.go-update.outputs.target_go }}
+          check-latest: false
+          cache: false
+
+      - name: Test Go modules
+        env:
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: 54322
+          TEST_DB_USER: test_user
+          TEST_DB_PASSWORD: test_password
+          TEST_DB_NAME: test_gogate
+        run: |
+          set -euo pipefail
+          go build ./...
+          go test -race ./...
+
+  go-pr:
+    name: Go · open pull request
+    needs: [prepare, go-update, go-test]
+    if: needs.go-test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      url: ${{ steps.cpr.outputs.pull-request-url }}
+      operation: ${{ steps.cpr.outputs.pull-request-operation }}
+      summary: ${{ steps.describe.outputs.summary }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # Needed so the PR can bump GO_VERSION in .github/workflows/ci.yml.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Checkout base commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Download patch
+        uses: actions/download-artifact@v4
+        with:
+          name: go-upgrade
+          path: ${{ runner.temp }}/go-upgrade
+
+      - name: Apply and check patch
+        run: |
+          set -euo pipefail
+          git apply --index --binary "$RUNNER_TEMP/go-upgrade/changes.patch"
+          python3 - << 'PY'
+          import subprocess
+          import sys
+
+          allowed = {"go.mod", "go.sum"}
+          raw = subprocess.run(
+              ["git", "diff", "--cached", "--name-only", "-z", "--no-renames"],
+              check=True,
+              capture_output=True,
+          ).stdout
+          paths = [path for path in raw.decode("utf-8", "surrogateescape").split("\0") if path]
+          problems = []
+          if not paths:
+              problems.append("the patch is empty")
+          for path in paths:
+              if path not in allowed:
+                  problems.append(f"{path}: not a dependency file")
+          for problem in problems:
+              print(f"::error::Rejected upgrade patch: {problem}")
+          if problems:
+              sys.exit(1)
+          print(f"Patch touches {len(paths)} dependency files.")
+          PY
+
+      - name: Update CI Go version pin
+        env:
+          TARGET_GO: ${{ needs.go-update.outputs.target_go }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import os
+          import pathlib
+          import re
+
+          target = os.environ["TARGET_GO"]
+          path = pathlib.Path(".github/workflows/ci.yml")
+          text = path.read_text(encoding="utf-8")
+          pattern = re.compile(r'(?m)^(  GO_VERSION:\s*")(\d+\.\d+(?:\.\d+)?)(")\s*$')
+          match = pattern.search(text)
+          notes = []
+          if match and match.group(2) != target:
+              notes.append(f"- `.github/workflows/ci.yml`: `{match.group(2)}` → `{target}`")
+              text = pattern.sub(rf'\g<1>{target}\g<3>', text, count=1)
+              path.write_text(text, encoding="utf-8")
+          pathlib.Path(os.environ["RUNNER_TEMP"], "go-pins.md").write_text(
+              "\n".join(notes), encoding="utf-8"
+          )
+          print("\n".join(notes) or "No CI Go version pin changed.")
+          PY
+
+      - name: Describe pull request
+        id: describe
+        env:
+          TARGET_GO: ${{ needs.go-update.outputs.target_go }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          work = pathlib.Path(os.environ["RUNNER_TEMP"])
+          target = os.environ["TARGET_GO"]
+          directive = re.compile(r"(?m)^go\s+(\S+)\s*$")
+          version_lines = re.compile(r"(?m)^(go|toolchain)\s+\S+\s*$")
+
+          before = subprocess.run(
+              ["git", "show", "HEAD:go.mod"], capture_output=True, text=True, check=True
+          ).stdout
+          after = pathlib.Path("go.mod").read_text(encoding="utf-8")
+          old = directive.search(before)
+          go_changed = [m.group(0) for m in version_lines.finditer(before)] != [
+              m.group(0) for m in version_lines.finditer(after)
+          ]
+          deps_changed = version_lines.sub("", before) != version_lines.sub("", after)
+          changed = subprocess.run(
+              ["git", "diff", "HEAD", "--name-only"], capture_output=True, text=True, check=True
+          ).stdout.split()
+          if any(path.endswith("go.sum") for path in changed):
+              deps_changed = True
+          pins = (work / "go-pins.md").read_text(encoding="utf-8").strip()
+          go_changed = go_changed or bool(pins)
+
+          if old and old.group(1) != target:
+              version_summary = f"Go `{old.group(1)}` → `{target}`"
+          else:
+              version_summary = f"Go `{target}`"
+          if go_changed and deps_changed:
+              title = f"chore(deps): upgrade Go to {target} and module dependencies"
+              summary = f"{version_summary} and module dependencies"
+          elif go_changed:
+              title = f"chore(deps): upgrade Go to {target}"
+              summary = version_summary
+          else:
+              title = "chore(deps): upgrade Go module dependencies"
+              summary = "Go module dependencies"
+
+          body = (work / "go-upgrade" / "body.md").read_text(encoding="utf-8")[:50000]
+          if pins:
+              body += f"\n#### Go version pins\n\n{pins}\n"
+          body += "\n_Opened by the Upgrade Dependencies workflow._\n"
+          (work / "go-pr-body.md").write_text(body, encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"title={title}\nsummary={summary}\n")
+          print(title)
+          PY
+
+      - name: Create pull request
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          base: ${{ needs.prepare.outputs.base_branch }}
+          branch: chore/upgrade-go-dependencies
+          delete-branch: true
+          commit-message: ${{ steps.describe.outputs.title }}
+          committer: ${{ env.BOT_IDENTITY }}
+          author: ${{ env.BOT_IDENTITY }}
+          title: ${{ steps.describe.outputs.title }}
+          body-path: ${{ runner.temp }}/go-pr-body.md
+          labels: |
+            automated-pr
+            dependencies
+
+      - name: Write summary
+        env:
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          PR_OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
+        run: |
+          {
+            echo "## Go dependency upgrade"
+            echo ""
+            echo "Pull request ${PR_OPERATION:-unchanged}: ${PR_URL:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify Slack
+    needs: [go-update, go-test, go-pr]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Compose and send Slack message
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL_ID }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          UPDATE_RESULT: ${{ needs.go-update.result }}
+          HAS_CHANGES: ${{ needs.go-update.outputs.has_changes }}
+          TEST_RESULT: ${{ needs.go-test.result }}
+          PR_RESULT: ${{ needs.go-pr.result }}
+          PR_URL: ${{ needs.go-pr.outputs.url }}
+          PR_OPERATION: ${{ needs.go-pr.outputs.operation }}
+          SUMMARY: ${{ needs.go-pr.outputs.summary }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          env = os.environ
+          run_link = f"<{env['RUN_URL']}|View workflow run>"
+
+
+          def escape(text):
+              return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+          successes = []
+          failures = []
+          if env["UPDATE_RESULT"] != "success":
+              failures.append(f"*Go*: resolving upgrades failed. {run_link}")
+          elif env.get("HAS_CHANGES") != "true":
+              pass
+          elif env["TEST_RESULT"] != "success":
+              failures.append(
+                  f"*Go*: tests failed after the upgrade, so no pull request was opened. {run_link}"
+              )
+          elif env["PR_RESULT"] != "success":
+              failures.append(
+                  f"*Go*: tests passed, but the pull request could not be created. {run_link}"
+              )
+          elif env["PR_OPERATION"] in ("created", "updated") and env["PR_URL"].startswith(
+              f"{env['SERVER_URL']}/{env['REPOSITORY']}/pull/"
+          ):
+              verb = "opened" if env["PR_OPERATION"] == "created" else "updated"
+              summary = escape(env["SUMMARY"] or "Go dependencies")
+              successes.append(
+                  f"*Go*: pull request {verb}. {summary}\n<{env['PR_URL']}|Open pull request>"
+              )
+
+          lines = failures + successes
+          if not lines:
+              print("Nothing to report.")
+              raise SystemExit(0)
+
+          failed = bool(failures)
+          heading = "Go dependency upgrade failed" if failed else "Go dependency upgrade"
+          message = f"*{heading}* in `{env['REPOSITORY']}`\n\n" + "\n\n".join(lines)
+          print(message[:2900])
+
+          payload = {
+              "channel": env["CHANNEL"],
+              "text": message[:2900],
+              "unfurl_links": False,
+              "unfurl_media": False,
+          }
+          request = urllib.request.Request(
+              "https://slack.com/api/chat.postMessage",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Authorization": f"Bearer {env['SLACK_BOT_TOKEN']}",
+                  "Content-Type": "application/json; charset=utf-8",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = json.load(response)
+          except urllib.error.HTTPError as error:
+              print(f"::error::Slack HTTP {error.code}: {error.read()[:500]!r}")
+              raise SystemExit(1) from error
+          if not body.get("ok"):
+              print(f"::error::Slack API error: {body.get('error', 'unknown')}")
+              raise SystemExit(1)
+          print("Slack notification sent.")
+          PY
