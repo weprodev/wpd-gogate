@@ -6,13 +6,14 @@ run-name: Upgrade Go dependencies
 # Cannot call weprodev/shared-workflows (private) from a public caller.
 #
 # Needs vars.SLACK_ALERTS_CHANNEL_ID and secrets.SLACK_BOT_TOKEN.
-# Set the GitHub App client ID and private key so the pull request triggers CI
-# and can update workflow Go version pins.
+# Set the GitHub App client ID and private key so the pull request triggers CI.
+# The App is not granted workflows:write, so ci.yml GO_VERSION pins are noted
+# in the PR body for a manual bump instead of being edited automatically.
 #
 # Upgraded module code runs only in go-test. That job gets a read-only
 # GITHUB_TOKEN and no secrets, because a compromised module can read anything
-# the job holds. go-pr rejects patches that touch files other than go.mod,
-# go.sum, and the GO_VERSION pin in ci.yml.
+# the job holds. go-pr rejects patches that touch files other than go.mod
+# and go.sum.
 
 on:
   schedule:
@@ -380,10 +381,11 @@ jobs:
           private-key: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
-          # Needed so the PR can bump GO_VERSION in .github/workflows/ci.yml.
+          # Use only permissions already granted to the installation.
+          # Do not request workflows:write — this App does not have it, and
+          # requesting ungranted permissions makes token creation fail with 422.
           permission-contents: write
           permission-pull-requests: write
-          permission-workflows: write
 
       - name: Checkout base commit
         uses: actions/checkout@v4
@@ -425,7 +427,7 @@ jobs:
           print(f"Patch touches {len(paths)} dependency files.")
           PY
 
-      - name: Update CI Go version pin
+      - name: Note CI Go version pin
         env:
           TARGET_GO: ${{ needs.go-update.outputs.target_go }}
         run: |
@@ -435,20 +437,25 @@ jobs:
           import pathlib
           import re
 
+          # Workflow files are not updated here: the GitHub App is not granted
+          # workflows:write. Call out a manual pin bump when ci.yml lags behind.
           target = os.environ["TARGET_GO"]
-          path = pathlib.Path(".github/workflows/ci.yml")
-          text = path.read_text(encoding="utf-8")
-          pattern = re.compile(r'(?m)^(  GO_VERSION:\s*")(\d+\.\d+(?:\.\d+)?)(")\s*$')
-          match = pattern.search(text)
           notes = []
-          if match and match.group(2) != target:
-              notes.append(f"- `.github/workflows/ci.yml`: `{match.group(2)}` → `{target}`")
-              text = pattern.sub(rf'\g<1>{target}\g<3>', text, count=1)
-              path.write_text(text, encoding="utf-8")
+          path = pathlib.Path(".github/workflows/ci.yml")
+          if path.is_file():
+              text = path.read_text(encoding="utf-8")
+              match = re.search(
+                  r'(?m)^  GO_VERSION:\s*"(\d+\.\d+(?:\.\d+)?)"\s*$', text
+              )
+              if match and match.group(1) != target:
+                  notes.append(
+                      f"- `.github/workflows/ci.yml` still pins `{match.group(1)}`; "
+                      f"bump `GO_VERSION` to `{target}` manually (App lacks workflows:write)."
+                  )
           pathlib.Path(os.environ["RUNNER_TEMP"], "go-pins.md").write_text(
               "\n".join(notes), encoding="utf-8"
           )
-          print("\n".join(notes) or "No CI Go version pin changed.")
+          print("\n".join(notes) or "CI Go version pin is already aligned or absent.")
           PY
 
       - name: Describe pull request
@@ -483,7 +490,6 @@ jobs:
           if any(path.endswith("go.sum") for path in changed):
               deps_changed = True
           pins = (work / "go-pins.md").read_text(encoding="utf-8").strip()
-          go_changed = go_changed or bool(pins)
 
           if old and old.group(1) != target:
               version_summary = f"Go `{old.group(1)}` → `{target}`"
@@ -501,7 +507,7 @@ jobs:
 
           body = (work / "go-upgrade" / "body.md").read_text(encoding="utf-8")[:50000]
           if pins:
-              body += f"\n#### Go version pins\n\n{pins}\n"
+              body += f"\n#### Follow-up\n\n{pins}\n"
           body += "\n_Opened by the Upgrade Dependencies workflow._\n"
           (work / "go-pr-body.md").write_text(body, encoding="utf-8")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
