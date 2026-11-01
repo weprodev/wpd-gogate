@@ -7,15 +7,13 @@ run-name: Upgrade Go dependencies
 #
 # Needs vars.SLACK_ALERTS_CHANNEL_ID and secrets.SLACK_BOT_TOKEN.
 #
-# Pull requests are opened with GITHUB_TOKEN. The org GitHub App installation
-# on this public repo is not granted contents/pull-requests write, so
-# create-github-app-token fails with 422 if those permissions are requested,
-# and an inherited App token cannot push the upgrade branch either.
-# Trade-off: GITHUB_TOKEN PRs do not start new workflow runs; re-run CI or
-# push an empty commit on the PR branch if checks must appear.
+# CI uses setup-go go-version-file: go.mod and installs the latest stable
+# golangci-lint, so a go.mod toolchain bump stays aligned without a separate
+# GO_VERSION pin. GITHUB_TOKEN still cannot rewrite workflow files; if CI is
+# still on a hardcoded pin, go-pr blocks the PR and Slack gets the fix steps.
 #
-# Upgraded module code runs only in go-test (no secrets). go-pr rejects
-# patches that touch files other than go.mod and go.sum.
+# go-test mirrors CI: gofmt, latest golangci-lint, build, race tests (+ Postgres).
+# go-pr also refreshes non-workflow Go pins (.go-version, Dockerfiles, etc.).
 
 on:
   schedule:
@@ -256,9 +254,8 @@ jobs:
           parts = [
               "### Automated Go dependency upgrade",
               "",
-              "This pull request was opened only after the upgrade passed its tests in an isolated job.",
-              "",
-              "Test command: `go build ./... && go test -race ./...`",
+              "This pull request was opened only after the upgrade passed CI-equivalent checks",
+              "(gofmt, latest golangci-lint, `go build`, and `go test -race`) in an isolated job.",
               "",
           ]
           if go_lines:
@@ -345,6 +342,29 @@ jobs:
           check-latest: false
           cache: false
 
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+          UNFORMATTED=$(gofmt -l . | grep -v vendor || true)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::Code not formatted after the upgrade. Run 'gofmt -w .' and retry."
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Install and run latest golangci-lint
+        run: |
+          set -euo pipefail
+          LINT_VERSION=$(curl -fsSL https://api.github.com/repos/golangci/golangci-lint/releases/latest | jq -r .tag_name)
+          if ! [[ "$LINT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not resolve latest golangci-lint release (got '${LINT_VERSION}')"
+            exit 1
+          fi
+          echo "Installing golangci-lint ${LINT_VERSION}"
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${LINT_VERSION}"
+          golangci-lint version
+          golangci-lint run --timeout=5m ./...
+
       - name: Test Go modules
         env:
           TEST_DB_HOST: localhost
@@ -370,6 +390,7 @@ jobs:
       url: ${{ steps.cpr.outputs.pull-request-url }}
       operation: ${{ steps.cpr.outputs.pull-request-operation }}
       summary: ${{ steps.describe.outputs.summary }}
+      detail: ${{ steps.ci-align.outputs.detail || steps.describe.outputs.summary }}
     steps:
       - name: Checkout base commit
         uses: actions/checkout@v4
@@ -414,36 +435,142 @@ jobs:
           print(f"Patch touches {len(paths)} dependency files.")
           PY
 
-      - name: Note CI Go version pin
+      - name: Align related Go version references
+        id: ci-align
         env:
           TARGET_GO: ${{ needs.go-update.outputs.target_go }}
+          BASE_BRANCH: ${{ needs.prepare.outputs.base_branch }}
         run: |
           set -euo pipefail
           python3 - << 'PY'
           import os
           import pathlib
           import re
+          import subprocess
+          import sys
 
-          # GITHUB_TOKEN cannot push updates to workflow files. Call out a
-          # manual pin bump when ci.yml lags behind go.mod.
           target = os.environ["TARGET_GO"]
+          base = os.environ["BASE_BRANCH"]
+          work = pathlib.Path(os.environ["RUNNER_TEMP"])
           notes = []
-          path = pathlib.Path(".github/workflows/ci.yml")
-          if path.is_file():
-              text = path.read_text(encoding="utf-8")
-              match = re.search(
-                  r'(?m)^  GO_VERSION:\s*"(\d+\.\d+(?:\.\d+)?)"\s*$', text
+          blocked = []
+
+          # Prefer CI that tracks go.mod. Hardcoded GO_VERSION cannot be fixed by
+          # GITHUB_TOKEN (cannot push workflow files), so block the PR instead.
+          ci_path = pathlib.Path(".github/workflows/ci.yml")
+          if ci_path.is_file():
+              text = ci_path.read_text(encoding="utf-8")
+              uses_mod = "go-version-file:" in text and "go.mod" in text
+              pin = re.search(r'(?m)^  GO_VERSION:\s*"(\d+\.\d+(?:\.\d+)?)"\s*$', text)
+              pinned_go_version = re.search(
+                  r'(?m)^\s+go-version:\s*\$\{\{\s*env\.GO_VERSION\s*\}\}\s*$', text
               )
-              if match and match.group(1) != target:
-                  notes.append(
-                      f"- `.github/workflows/ci.yml` still pins `{match.group(1)}`; "
-                      f"bump `GO_VERSION` to `{target}` manually "
-                      f"(GITHUB_TOKEN cannot modify workflow files)."
+              hardcoded = re.findall(
+                  r'(?m)^\s+go-version:\s*["\']?(\d+\.\d+(?:\.\d+)?)["\']?\s*$', text
+              )
+              if uses_mod and not pin and not hardcoded:
+                  notes.append("- `.github/workflows/ci.yml` already tracks `go.mod`")
+              else:
+                  current = pin.group(1) if pin else (hardcoded[0] if hardcoded else "unknown")
+                  blocked.append(
+                      (
+                          f"CI still uses a hardcoded Go pin (`{current}`) instead of "
+                          f"`go-version-file: go.mod`. GITHUB_TOKEN cannot update workflow "
+                          f"files, so this upgrade PR was not opened.\n\n"
+                          f"Fix on `{base}` then re-run *Upgrade dependencies*:\n"
+                          f"```bash\n"
+                          f"git checkout {base} && git pull\n"
+                          f"# In .github/workflows/ci.yml remove GO_VERSION and use:\n"
+                          f"#   go-version-file: go.mod\n"
+                          f"# Keep installing latest golangci-lint from GitHub releases.\n"
+                          f"git add .github/workflows/ci.yml\n"
+                          f"git commit -m 'ci: track Go version from go.mod'\n"
+                          f"git push origin {base}\n"
+                          f"```"
+                      )
                   )
-          pathlib.Path(os.environ["RUNNER_TEMP"], "go-pins.md").write_text(
-              "\n".join(notes), encoding="utf-8"
-          )
-          print("\n".join(notes) or "CI Go version pin is already aligned or absent.")
+
+          # Non-workflow pins can be updated in the PR.
+          skip_dirs = {".git", "vendor", "node_modules", ".history"}
+          patterns = [
+              re.compile(r"(?P<pre>\bGO_VERSION:\s*[\"']?)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>[\"']?)"),
+              re.compile(r"(?P<pre>\bgo-version:\s*[\"']?)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>[\"']?)"),
+              re.compile(r"(?P<pre>\bGOTOOLCHAIN:\s*[\"']?go)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>[\"']?)"),
+              re.compile(r"(?P<pre>\bGO_VERSION=)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>)"),
+              re.compile(r"(?P<pre>\bgolang:)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>)"),
+          ]
+          tool_versions = re.compile(r"(?m)^(?P<pre>golang\s+)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<post>.*)$")
+
+          def parse(value):
+              parts = [int(p) for p in value.split(".")]
+              while len(parts) < 3:
+                  parts.append(0)
+              return tuple(parts[:3])
+
+          target_t = parse(target)
+          candidates = []
+          for dirpath, dirnames, filenames in os.walk("."):
+              dirnames[:] = [n for n in dirnames if n not in skip_dirs]
+              for name in filenames:
+                  if name in {".go-version", ".tool-versions"} or name.startswith(
+                      ("Dockerfile", "docker-compose", "compose.")
+                  ) or name.endswith(".Dockerfile"):
+                      candidates.append(pathlib.Path(dirpath) / name)
+
+          for path in candidates:
+              if path.is_symlink() or not path.is_file():
+                  continue
+              rel = path.as_posix().removeprefix("./")
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              changes = []
+
+              def replacer(match, _changes=changes, _rel=rel):
+                  current = match.group("ver")
+                  if parse(current) >= target_t:
+                      return match.group(0)
+                  _changes.append(f"- `{_rel}`: `{current}` → `{target}`")
+                  return f"{match.group('pre')}{target}{match.group('post') or ''}"
+
+              if path.name == ".go-version":
+                  current = text.strip()
+                  if re.fullmatch(r"\d+\.\d+(\.\d+)?", current) and parse(current) < target_t:
+                      updated = target + ("\n" if text.endswith("\n") else "")
+                      changes.append(f"- `{rel}`: `{current}` → `{target}`")
+                  else:
+                      updated = text
+              elif path.name == ".tool-versions":
+                  updated = tool_versions.sub(replacer, text)
+              else:
+                  updated = text
+                  for pattern in patterns:
+                      updated = pattern.sub(replacer, updated)
+
+              if updated != text:
+                  path.write_text(updated, encoding="utf-8")
+                  notes.extend(changes)
+                  subprocess.run(["git", "add", "--", rel], check=True)
+
+          (work / "go-pins.md").write_text("\n".join(dict.fromkeys(notes)), encoding="utf-8")
+          detail_path = work / "go-pr-detail.md"
+          if blocked:
+              detail = blocked[0]
+              detail_path.write_text(detail, encoding="utf-8")
+              print(f"::error::{detail.splitlines()[0]}")
+              print(detail)
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"detail<<EOF_DETAIL\n{detail[:2500]}\nEOF_DETAIL\n")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write("## Upgrade blocked: CI is not tracking go.mod\n\n")
+                  summary.write(detail + "\n")
+              raise SystemExit(1)
+
+          detail_path.write_text("", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("detail=\n")
+          print("\n".join(notes) or "No related Go version pins changed.")
           PY
 
       - name: Describe pull request
@@ -478,6 +605,7 @@ jobs:
           if any(path.endswith("go.sum") for path in changed):
               deps_changed = True
           pins = (work / "go-pins.md").read_text(encoding="utf-8").strip()
+          go_changed = go_changed or bool(pins)
 
           if old and old.group(1) != target:
               version_summary = f"Go `{old.group(1)}` → `{target}`"
@@ -495,7 +623,11 @@ jobs:
 
           body = (work / "go-upgrade" / "body.md").read_text(encoding="utf-8")[:50000]
           if pins:
-              body += f"\n#### Follow-up\n\n{pins}\n"
+              body += f"\n#### Related Go version pins\n\n{pins}\n"
+          body += (
+              "\nCI tracks `go.mod` via `go-version-file` and installs the latest "
+              "stable golangci-lint, so no separate workflow Go pin bump is required.\n"
+          )
           body += (
               "\n> CI may not start automatically on this PR (opened with "
               "`GITHUB_TOKEN`). Re-run workflows or push an empty commit if checks are required.\n"
@@ -557,6 +689,7 @@ jobs:
           PR_URL: ${{ needs.go-pr.outputs.url }}
           PR_OPERATION: ${{ needs.go-pr.outputs.operation }}
           SUMMARY: ${{ needs.go-pr.outputs.summary }}
+          DETAIL: ${{ needs.go-pr.outputs.detail }}
         run: |
           set -euo pipefail
           python3 - << 'PY'
@@ -575,18 +708,30 @@ jobs:
 
           successes = []
           failures = []
+          detail = (env.get("DETAIL") or "").strip()
           if env["UPDATE_RESULT"] != "success":
-              failures.append(f"*Go*: resolving upgrades failed. {run_link}")
+              failures.append(
+                  f"*Go*: resolving upgrades failed before tests ran. {run_link}"
+              )
           elif env.get("HAS_CHANGES") != "true":
               pass
           elif env["TEST_RESULT"] != "success":
               failures.append(
-                  f"*Go*: tests failed after the upgrade, so no pull request was opened. {run_link}"
+                  "*Go*: upgrade failed CI-equivalent checks "
+                  "(gofmt / latest golangci-lint / build / race tests), "
+                  f"so no pull request was opened. {run_link}"
               )
           elif env["PR_RESULT"] != "success":
-              failures.append(
-                  f"*Go*: tests passed, but the pull request could not be created. {run_link}"
-              )
+              if detail:
+                  failures.append(
+                      "*Go*: checks passed, but the PR was blocked because related "
+                      f"CI/config still needs a manual fix.\n{escape(detail)}\n{run_link}"
+                  )
+              else:
+                  failures.append(
+                      "*Go*: checks passed, but the pull request could not be created. "
+                      f"{run_link}"
+                  )
           elif env["PR_OPERATION"] in ("created", "updated") and env["PR_URL"].startswith(
               f"{env['SERVER_URL']}/{env['REPOSITORY']}/pull/"
           ):
