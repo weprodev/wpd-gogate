@@ -1,0 +1,74 @@
+name: Upgrade dependencies
+
+run-name: Upgrade Go dependencies
+
+# Weekly Go module and toolchain upgrade.
+# Needs vars.SLACK_ALERTS_CHANNEL_ID and secrets.SLACK_BOT_TOKEN.
+# Set the GitHub App client ID and private key so the pull request triggers CI.
+
+on:
+  schedule:
+    # Saturday 06:00 UTC.
+    - cron: "0 6 * * 6"
+  workflow_dispatch:
+    inputs:
+      target_go_version:
+        description: "Go version to pin (for example 1.27.4). Leave empty for the latest stable release."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upgrade-dependencies
+  cancel-in-progress: false
+
+jobs:
+  validate-configuration:
+    name: Validate automation configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    env:
+      SLACK_CHANNEL_ID: ${{ vars.SLACK_ALERTS_CHANNEL_ID }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      APP_CLIENT_ID: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
+    steps:
+      - name: Check required settings
+        run: |
+          set -euo pipefail
+          [ -n "$SLACK_CHANNEL_ID" ] || { echo "::error::SLACK_ALERTS_CHANNEL_ID is not configured"; exit 1; }
+          [[ "$SLACK_CHANNEL_ID" =~ ^[CGD][A-Z0-9]{6,}$ ]] || { echo "::error::SLACK_ALERTS_CHANNEL_ID is not a Slack channel ID"; exit 1; }
+          [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::SLACK_BOT_TOKEN is not configured"; exit 1; }
+          [ -n "$APP_CLIENT_ID" ] || { echo "::error::WPD_GITHUB_APP_CLIENT_ID (or APP_CLIENT_ID) is not configured"; exit 1; }
+          [ -n "$APP_PRIVATE_KEY" ] || { echo "::error::WPD_GITHUB_APP_PRIVATE_KEY (or APP_PRIVATE_KEY) is not configured"; exit 1; }
+
+  upgrade:
+    needs: validate-configuration
+    uses: weprodev/shared-workflows/.github/workflows/upgrade-go-dependencies.yml@master
+    with:
+      base_branch: master
+      go_modules: "."
+      update_go_version: true
+      update_go_directive: true
+      update_go_dependencies: true
+      go_version_pins: older
+      target_go_version: ${{ github.event_name == 'workflow_dispatch' && inputs.target_go_version || '' }}
+      go_test_command: "go build ./... && go test -race ./..."
+      enable_postgres: true
+      postgres_image: postgres:17-alpine
+      postgres_user: test_user
+      postgres_password: test_password
+      postgres_db: test_gogate
+      postgres_port: "54322"
+      postgres_env_prefix: TEST_DB
+      slack_on_failure: true
+      slack_channel_id: ${{ vars.SLACK_ALERTS_CHANNEL_ID }}
+      wpd_github_app_client_id: ${{ vars.WPD_GITHUB_APP_CLIENT_ID || vars.APP_CLIENT_ID }}
+    secrets:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      wpd_github_app_private_key: ${{ secrets.WPD_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
