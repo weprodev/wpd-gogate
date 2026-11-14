@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/labstack/echo/v4 v4.16.3
+	github.com/labstack/echo/v4 v4.16.4
 	github.com/lib/pq v1.12.3
 	github.com/stretchr/testify v1.12.1
 )
